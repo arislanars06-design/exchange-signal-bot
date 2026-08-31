@@ -155,3 +155,55 @@ class BinanceFutures:
         """Narxni formatlab beradi (mos xonalar bilan)."""
         prec = self.get_price_precision(pair)
         return f"{price:,.{prec}f}"
+
+
+class ExchangeRouter:
+    """
+    Ko'p manba data source router. Pair formatiga qarab avtomatik yo'naltiradi:
+      - "BTC/USDT", "BTC/USDT:USDT" (slash bor) → Binance Futures
+      - "XAUUSD", "NVDA", "TSLA" (slash yo'q)     → Yahoo Finance
+
+    Barcha kirish/chiqish signatures BinanceFutures bilan bir xil - shuning uchun
+    main.py'da almashtirib qo'yiladi.
+    """
+
+    def __init__(self, binance: "BinanceFutures", yahoo):
+        self.binance = binance
+        self.yahoo = yahoo
+
+    def _is_binance(self, pair: str) -> bool:
+        return "/" in pair
+
+    def _source(self, pair: str):
+        return self.binance if self._is_binance(pair) else self.yahoo
+
+    def load_markets(self) -> None:
+        self.binance.load_markets()
+        self.yahoo.load_markets()
+
+    def check_pair(self, pair: str) -> bool:
+        return self._source(pair).check_pair(pair)
+
+    def fetch_candles(self, pair: str, timeframe: str,
+                      limit: int = 100) -> List[Candle]:
+        return self._source(pair).fetch_candles(pair, timeframe, limit)
+
+    def fetch_price(self, pair: str) -> Optional[float]:
+        return self._source(pair).fetch_price(pair)
+
+    def fetch_prices(self, pairs: List[str]) -> Dict[str, float]:
+        """Har bir manbaga o'z pair'larini yuboradi (parallel emas, ketma-ket)."""
+        result: Dict[str, float] = {}
+        binance_pairs = [p for p in pairs if self._is_binance(p)]
+        yahoo_pairs = [p for p in pairs if not self._is_binance(p)]
+        if binance_pairs:
+            result.update(self.binance.fetch_prices(binance_pairs))
+        if yahoo_pairs:
+            result.update(self.yahoo.fetch_prices(yahoo_pairs))
+        return result
+
+    def format_price(self, pair: str, price: float) -> str:
+        return self._source(pair).format_price(pair, price)
+
+    def get_price_precision(self, pair: str) -> int:
+        return self._source(pair).get_price_precision(pair)

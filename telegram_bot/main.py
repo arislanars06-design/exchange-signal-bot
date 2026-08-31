@@ -20,7 +20,8 @@ from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import config
-from exchange import BinanceFutures
+from exchange import BinanceFutures, ExchangeRouter
+from exchange_yahoo import YahooFinance
 from strategy import StrategyEngine
 from telegram_bot import TelegramNotifier
 from state import StateManager
@@ -61,7 +62,7 @@ signal.signal(signal.SIGTERM, _handle_signal)
 
 def warmup(
     engine: StrategyEngine,
-    exchange: BinanceFutures,
+    exchange,
     config,
 ) -> None:
     """
@@ -100,7 +101,7 @@ def warmup(
 
 def process_pair_timeframe(
     engine: StrategyEngine,
-    exchange: BinanceFutures,
+    exchange,
     pair: str,
     timeframe: str,
 ) -> List[Event]:
@@ -228,21 +229,28 @@ def main() -> int:
     logger.info(f"  Poll interval: {config.poll_interval}s")
     logger.info("=" * 60)
 
-    # Komponentlarni init qilish
-    exchange = BinanceFutures(
+    # Komponentlarni init qilish - router bilan (Binance + Yahoo)
+    binance = BinanceFutures(
         api_key=config.binance_api_key,
         api_secret=config.binance_api_secret,
     )
+    yahoo = YahooFinance()
+    exchange = ExchangeRouter(binance, yahoo)
     try:
         exchange.load_markets()
     except Exception as e:
-        logger.error(f"Binance'ga ulanib bo'lmadi: {e}")
+        logger.error(f"Data manbalari yuklanmadi: {e}")
         return 1
 
-    # Juftliklarni tekshirish
+    # Juftliklarni tekshirish - har biri o'z manbaida bo'lishi kerak
+    binance_pairs = [p for p in config.pairs if "/" in p]
+    yahoo_pairs = [p for p in config.pairs if "/" not in p]
+    logger.info(f"  Binance juftliklar: {binance_pairs}")
+    logger.info(f"  Yahoo juftliklar: {yahoo_pairs}")
+
     invalid = [p for p in config.pairs if not exchange.check_pair(p)]
     if invalid:
-        logger.error(f"Bu juftliklar Binance Futures'da topilmadi: {invalid}")
+        logger.error(f"Bu juftliklar topilmadi (Binance yoki Yahoo'da): {invalid}")
         return 1
 
     engine = StrategyEngine(config)
