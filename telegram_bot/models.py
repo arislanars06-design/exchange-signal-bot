@@ -173,3 +173,23 @@ class Counters:
     @classmethod
     def from_dict(cls, d: dict) -> "Counters":
         return cls(**d)
+
+
+@dataclass
+class DailyPairStats:
+    """Bitta juftlik uchun kunlik statistika hisoblagichlari."""
+    pair: str
+    setups_created: int = 0
+    won: int = 0
+    lost: int = 0
+    be: int = 0
+    cancelled: int = 0
+    partial_tp1: int = 0
+    total_usd: float = 0.0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DailyPairStats":
+        return cls(**d)

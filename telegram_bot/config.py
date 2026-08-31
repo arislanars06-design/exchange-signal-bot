@@ -88,6 +88,10 @@ class Config:
     log_level: str = field(default_factory=lambda: _get_str("LOG_LEVEL", "INFO"))
     state_file: str = field(default_factory=lambda: _get_str("STATE_FILE", "state.json"))
 
+    # Kunlik report vaqt mintaqasi
+    report_tz: str = field(default_factory=lambda: _get_str("REPORT_TZ", "Asia/Tashkent"))
+    report_hour: int = field(default_factory=lambda: _get_int("REPORT_HOUR", 0))
+
     # Hisoblangan R/R
     @property
     def risk_range(self) -> float:

@@ -15,7 +15,9 @@ import logging
 import signal
 import sys
 import time
+from datetime import datetime
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import config
 from exchange import BinanceFutures
@@ -137,6 +139,62 @@ def process_pair_timeframe(
     return events
 
 
+def _get_tz(name: str):
+    """Timezone olish - fallback UTC ga."""
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, Exception):
+        logger.warning(f"Timezone '{name}' topilmadi, UTC ishlatiladi")
+        return ZoneInfo("UTC")
+
+
+def maybe_send_daily_report(
+    engine: StrategyEngine,
+    notifier: TelegramNotifier,
+    state_mgr,
+    tz,
+    report_hour: int,
+) -> None:
+    """
+    Konfiguratsiya qilingan vaqt zonasida yangi kun boshlanganini tekshiradi.
+    Yangi kun boshlansa, oldingi kunning statistikasini yuboradi va reset qiladi.
+    """
+    now_local = datetime.now(tz)
+    today_local = now_local.strftime("%Y-%m-%d")
+
+    # last_reported_day bo'sh bo'lsa - birinchi ishga tushish
+    if not engine.last_reported_day:
+        engine.last_reported_day = today_local
+        if not engine.daily_stats_day:
+            engine.daily_stats_day = today_local
+        return
+
+    # Yangi kun boshlandimi?
+    if today_local == engine.last_reported_day:
+        return
+
+    # Report yuborish uchun soat mos kelishini tekshiruv
+    # (agar bot 00:00 dan keyin yoqilsa - reportni darhol yuborish)
+    if now_local.hour < report_hour:
+        return
+
+    # Yangi kun - oldingi kunning statistikasini yuborish
+    prev_day = engine.last_reported_day
+    tz_label = str(tz)
+    logger.info(f"Kunlik report yuborilmoqda: {prev_day} ({tz_label})")
+    try:
+        notifier.send_daily_report(engine.daily_stats, prev_day, tz_label)
+    except Exception as e:
+        logger.exception(f"Daily report yuborish xatosi: {e}")
+
+    # Stats reset
+    engine.reset_daily_stats(today_local)
+    engine.last_reported_day = today_local
+
+    # State darhol saqlash
+    state_mgr.save(engine)
+
+
 def _timeframe_to_ms(tf: str) -> int:
     """'15m' → 900_000 ms."""
     unit = tf[-1]
@@ -206,6 +264,11 @@ def main() -> int:
 
     logger.info("Loop boshlandi...")
 
+    # Kunlik report uchun timezone
+    report_tz = _get_tz(config.report_tz)
+    logger.info(f"Daily report: {config.report_tz} vaqti bo'yicha soat "
+                f"{config.report_hour:02d}:00 da yuboriladi")
+
     last_save = 0
     save_every_s = 60  # har daqiqada bir marta state saqlash
 
@@ -240,7 +303,12 @@ def main() -> int:
                 except Exception as e:
                     logger.exception(f"Live price tekshirish xatosi: {e}")
 
-            # ========= 3) Cleanup + save =========
+            # ========= 3) Kunlik report (agar yangi kun bo'lsa) =========
+            if not _shutdown:
+                maybe_send_daily_report(engine, notifier, state_mgr,
+                                        report_tz, config.report_hour)
+
+            # ========= 4) Cleanup + save =========
             engine.cleanup_closed(keep_last=200)
 
             now = time.time()

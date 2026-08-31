@@ -47,14 +47,10 @@ class StateManager:
             return False
 
         try:
-            engine.load_state(
-                streaks=data.get("streaks", {}),
-                setups=data.get("setups", []),
-                counters=data.get("counters", {}),
-                next_id=data.get("next_id", 1),
-            )
+            engine.load_state(data)
             logger.info(f"State yuklandi: {len(engine.setups)} setup, "
-                        f"{len(engine.streaks)} streak")
+                        f"{len(engine.streaks)} streak, "
+                        f"{len(engine.daily_stats)} daily stats")
             return True
         except Exception as e:
             logger.exception(f"State yuklash xatosi: {e}")
@@ -62,14 +58,8 @@ class StateManager:
 
     def save(self, engine: StrategyEngine) -> bool:
         """Engine holatini atomik saqlaydi (tmp + rename)."""
-        streaks, setups, counters, next_id = engine.dump_state()
-        data = {
-            "version": self.VERSION,
-            "streaks": streaks,
-            "setups": setups,
-            "counters": counters,
-            "next_id": next_id,
-        }
+        data = engine.dump_state()
+        data["version"] = self.VERSION
         try:
             # Papkani yaratish (agar yo'q bo'lsa)
             self.path.parent.mkdir(parents=True, exist_ok=True)

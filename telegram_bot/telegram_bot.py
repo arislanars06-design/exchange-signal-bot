@@ -284,6 +284,74 @@ class TelegramNotifier:
     def send_shutdown(self) -> None:
         self.send_message("🛑 <b>SERIYA Bot to'xtatildi</b>")
 
+    def send_daily_report(self, daily_stats: dict, day: str,
+                          tz_label: str = "UTC") -> None:
+        """
+        Kunlik statistika hisobotini yuboradi.
+        `daily_stats`: {pair: DailyPairStats} - engine.daily_stats
+        `day`: YYYY-MM-DD (report kuni)
+        `tz_label`: masalan "UTC" yoki "Asia/Tashkent"
+        """
+        if not daily_stats:
+            text = (
+                f"📊 <b>KUNLIK STATISTIKA</b>\n"
+                f"📅 <b>{day}</b> ({tz_label})\n\n"
+                f"ℹ️ Bugun hech qanday setup bo'lmadi."
+            )
+            self.send_message(text)
+            return
+
+        # Umumiy yig'indi
+        tot_setups = sum(s.setups_created for s in daily_stats.values())
+        tot_won = sum(s.won for s in daily_stats.values())
+        tot_lost = sum(s.lost for s in daily_stats.values())
+        tot_be = sum(s.be for s in daily_stats.values())
+        tot_cancelled = sum(s.cancelled for s in daily_stats.values())
+        tot_partial = sum(s.partial_tp1 for s in daily_stats.values())
+        tot_usd = sum(s.total_usd for s in daily_stats.values())
+        pnl_emo = "📈" if tot_usd >= 0 else "📉"
+        pnl_sign = "+" if tot_usd >= 0 else ""
+
+        # Har bir juftlik uchun blok
+        pair_blocks = []
+        # Setup soniga qarab tartiblash (eng aktivlari birinchi)
+        sorted_pairs = sorted(daily_stats.items(),
+                              key=lambda kv: -kv[1].setups_created)
+        for pair, s in sorted_pairs:
+            if s.setups_created == 0 and s.total_usd == 0:
+                continue
+            pnl_pair = "+" if s.total_usd >= 0 else ""
+            pair_pnl_emo = "🟢" if s.total_usd > 0 else ("🔴" if s.total_usd < 0 else "⚪")
+            block = (
+                f"\n<b>{pair}</b> {pair_pnl_emo}\n"
+                f"  🎯 Setups: <b>{s.setups_created}</b>"
+            )
+            if s.won or s.be or s.lost or s.cancelled:
+                block += (
+                    f"\n  🏆 Won: {s.won} | 🩵 BE: {s.be} | "
+                    f"🔴 Lost: {s.lost} | ❌ Cancel: {s.cancelled}"
+                )
+            if s.partial_tp1:
+                block += f"\n  🎯 TP1 partial: {s.partial_tp1}"
+            block += f"\n  💰 P/L: <b>{pnl_pair}${s.total_usd:.2f}</b>"
+            pair_blocks.append(block)
+
+        text = (
+            f"📊 <b>KUNLIK STATISTIKA</b>\n"
+            f"📅 <b>{day}</b> ({tz_label})\n"
+            + "".join(pair_blocks) +
+            f"\n\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 <b>JAMI:</b>\n"
+            f"  🎯 Setups: <b>{tot_setups}</b> | "
+            f"🎯 TP1: {tot_partial}\n"
+            f"  🏆 Won: <b>{tot_won}</b> | "
+            f"🩵 BE: <b>{tot_be}</b> | "
+            f"🔴 Lost: <b>{tot_lost}</b> | "
+            f"❌ Cancel: <b>{tot_cancelled}</b>\n"
+            f"  {pnl_emo} <b>P/L: {pnl_sign}${tot_usd:.2f}</b>"
+        )
+        self.send_message(text)
+
     def send_error(self, err: str) -> None:
         # Xato xabari - HTML escape
         safe = err.replace("<", "&lt;").replace(">", "&gt;")[:1000]

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from config import Config
 from models import (
-    Candle, Setup, StreakState, Event, Counters,
+    Candle, Setup, StreakState, Event, Counters, DailyPairStats,
     Status, Direction, EventType,
 )
 
@@ -30,6 +30,10 @@ class StrategyEngine:
         self.setups: List[Setup] = []
         self.counters = Counters()
         self._next_id = 1
+        # Kunlik statistika (00:00 da report + reset)
+        self.daily_stats: Dict[str, DailyPairStats] = {}  # key: pair
+        self.daily_stats_day: str = ""  # YYYY-MM-DD - hozirgi tracker kuni
+        self.last_reported_day: str = ""  # YYYY-MM-DD - oxirgi yuborilgan report kuni
 
     # ==================================================================
     # SILENT WARMUP - bot birinchi start'da tarixiy candles'ni
@@ -60,19 +64,70 @@ class StrategyEngine:
             self.streaks[key] = StreakState(pair=pair, timeframe=timeframe)
         return self.streaks[key]
 
-    def load_state(self, streaks: Dict[str, dict], setups: List[dict],
-                   counters: dict, next_id: int) -> None:
-        """State faylidan tiklash."""
-        self.streaks = {k: StreakState.from_dict(v) for k, v in streaks.items()}
-        self.setups = [Setup.from_dict(s) for s in setups]
-        self.counters = Counters.from_dict(counters) if counters else Counters()
-        self._next_id = next_id
+    def load_state(self, data: dict) -> None:
+        """State faylidan tiklash. `data` — dict from JSON."""
+        streaks_raw = data.get("streaks", {})
+        setups_raw = data.get("setups", [])
+        counters_raw = data.get("counters", {})
+        daily_raw = data.get("daily_stats", {})
+        self.streaks = {k: StreakState.from_dict(v) for k, v in streaks_raw.items()}
+        self.setups = [Setup.from_dict(s) for s in setups_raw]
+        self.counters = Counters.from_dict(counters_raw) if counters_raw else Counters()
+        self.daily_stats = {k: DailyPairStats.from_dict(v)
+                           for k, v in daily_raw.items()}
+        self.daily_stats_day = data.get("daily_stats_day", "")
+        self.last_reported_day = data.get("last_reported_day", "")
+        self._next_id = data.get("next_id", 1)
 
-    def dump_state(self) -> Tuple[Dict[str, dict], List[dict], dict, int]:
-        """State'ni saqlash uchun serializatsiya."""
-        streaks = {k: v.to_dict() for k, v in self.streaks.items()}
-        setups = [s.to_dict() for s in self.setups]
-        return streaks, setups, self.counters.to_dict(), self._next_id
+    def dump_state(self) -> dict:
+        """State'ni saqlash uchun to'liq dict (JSON-friendly)."""
+        return {
+            "streaks": {k: v.to_dict() for k, v in self.streaks.items()},
+            "setups": [s.to_dict() for s in self.setups],
+            "counters": self.counters.to_dict(),
+            "daily_stats": {k: v.to_dict() for k, v in self.daily_stats.items()},
+            "daily_stats_day": self.daily_stats_day,
+            "last_reported_day": self.last_reported_day,
+            "next_id": self._next_id,
+        }
+
+    # ==================================================================
+    # KUNLIK STATISTIKA
+    # ==================================================================
+
+    def _get_daily(self, pair: str) -> DailyPairStats:
+        if pair not in self.daily_stats:
+            self.daily_stats[pair] = DailyPairStats(pair=pair)
+        return self.daily_stats[pair]
+
+    def _apply_events_to_daily(self, events: List[Event]) -> None:
+        """Har bir event uchun daily stats yangilash."""
+        for ev in events:
+            ps = self._get_daily(ev.setup.pair)
+            if ev.type == EventType.SETUP_CREATED.value:
+                ps.setups_created += 1
+            elif ev.type == EventType.TP3_HIT.value:
+                ps.won += 1
+                ps.total_usd += ev.pnl_usd
+            elif ev.type == EventType.SL_HIT.value:
+                ps.lost += 1
+                ps.total_usd += ev.pnl_usd
+            elif ev.type == EventType.BE_STOP.value:
+                ps.be += 1
+            elif ev.type in (EventType.CANCELLED_CZ.value,
+                             EventType.CANCELLED_ROLLING.value):
+                ps.cancelled += 1
+            elif ev.type == EventType.TP1_HIT.value:
+                ps.partial_tp1 += 1
+                ps.total_usd += ev.pnl_usd
+            elif ev.type == EventType.TP2_HIT.value:
+                ps.total_usd += ev.pnl_usd
+
+    def reset_daily_stats(self, new_day: str) -> None:
+        """Kunlik statistikani tozalash (report yuborilgandan keyin)."""
+        self.daily_stats = {}
+        self.daily_stats_day = new_day
+        logger.info(f"Daily stats reset. New day: {new_day}")
 
     # ==================================================================
     # ASOSIY: yangi svecha yopildi
@@ -144,6 +199,9 @@ class StrategyEngine:
         self._update_streak(streak, candle)
 
         streak.last_processed_ms = candle.timestamp_ms
+
+        # Daily stats yangilash
+        self._apply_events_to_daily(events)
         return events
 
     # ==================================================================
@@ -485,6 +543,9 @@ class StrategyEngine:
 
                 # TP tekshiruvi
                 events.extend(self._handle_live_tp(setup, current_price, now_ms))
+
+        # Daily stats yangilash
+        self._apply_events_to_daily(events)
         return events
 
     def _handle_live_sl(self, setup: Setup, price: float, now_ms: int) -> List[Event]:
