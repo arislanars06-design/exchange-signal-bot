@@ -1,0 +1,632 @@
+//@version=5
+// ============================================================
+//  SERIYA STRATEGIYASI v5 - FIBONACCI
+//  Ketma-ket 3+ bullish yoki bearish svechalar
+//  Karobka: 1-svecha open → oxirgi svecha close
+// ============================================================
+
+strategy("Seriya Fib v5", shorttitle="Series-Fib", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=1, pyramiding=100, process_orders_on_close=false, commission_type=strategy.commission.percent, commission_value=0.04, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+STATUS_PENDING   = 0
+STATUS_FILLED    = 1
+STATUS_WON       = 2
+STATUS_LOST      = 3
+STATUS_CANCELLED = 4
+STATUS_BE        = 5
+
+// ==== INPUTS ====
+grpMain = "Asosiy"
+minCandles  = input.int(3,  "Minimum svechalar soni", minval=2, maxval=20, group=grpMain)
+maxVisible  = input.int(50, "Setuplar soni", minval=3, maxval=200, group=grpMain)
+useStrat    = input.bool(false, "Backtest orderlar", group=grpMain)
+showStats   = input.bool(true, "Statistika jadvali", group=grpMain)
+enableAlerts = input.bool(true, "Alert xabarlar", group=grpMain)
+enableBE    = input.bool(true, "TP1 dan keyin SL break-even'ga siljisin", group=grpMain)
+showEventMk = input.bool(true, "Event markerlar (IN/SL/TP/BE/X) + tooltip", group=grpMain)
+
+grpRisk = "Risk boshqarish"
+riskDollar = input.float(10.0, "Har bir bitim risk ($)", minval=0.0, step=1, group=grpRisk)
+
+grpFib = "Fibonacci darajalari"
+fibSL  = input.float(0.0, "SL Fib (0=karobka chekkasi)", group=grpFib)
+fibTP1 = input.float(1.618, "TP1 Fib", group=grpFib)
+fibTP2 = input.float(2.618, "TP2 Fib", group=grpFib)
+fibTP3 = input.float(3.618, "TP3 Fib", group=grpFib)
+
+grpPartial = "Partial closes"
+tp1Pct = input.float(50.0, "TP1 %", minval=0.0, maxval=100.0, step=5, group=grpPartial)
+tp2Pct = input.float(25.0, "TP2 %", minval=0.0, maxval=100.0, step=5, group=grpPartial)
+
+grpLines = "Chiziqlar (shaffof)"
+showEntryLn = input.bool(true, "Entry chizig'i", group=grpLines)
+showSlLn    = input.bool(true, "SL chizig'i",    group=grpLines)
+showTp1Ln   = input.bool(true, "TP1 chizig'i",   group=grpLines)
+showTp2Ln   = input.bool(true, "TP2 chizig'i",   group=grpLines)
+showTp3Ln   = input.bool(true, "TP3 chizig'i",   group=grpLines)
+showCzLn    = input.bool(true, "CZ chizig'i",    group=grpLines)
+
+grpBoxes = "Karobkalar"
+showBoxPending = input.bool(true, "Oq karobka", group=grpBoxes)
+showBoxWon     = input.bool(true, "Yashil karobka", group=grpBoxes)
+showBoxLost    = input.bool(true, "Qizil karobka", group=grpBoxes)
+showBoxCancel  = input.bool(true, "Sariq karobka", group=grpBoxes)
+showBoxBe      = input.bool(true, "Cyan karobka (BE stop)", group=grpBoxes)
+
+tp3Pct = 100.0 - tp1Pct - tp2Pct
+riskRange = 1.0 - fibSL
+rrTP1 = (fibTP1 - 1.0) / riskRange
+rrTP2 = (fibTP2 - 1.0) / riskRange
+rrTP3 = (fibTP3 - 1.0) / riskRange
+
+// ==== COLORS ====
+cFillEvt = color.new(#42a5f5, 0)
+cBoxPendingBd = color.new(color.white, 0)
+cBoxWonBd     = color.new(#00c853, 0)
+cBoxLostBd    = color.new(#d50000, 0)
+cBoxCancelBd  = color.new(#ffeb3b, 0)
+cBoxBeBd      = color.new(#00bcd4, 0)
+cBE           = color.new(#00bcd4, 0)
+cBeSlLn       = color.new(#00bcd4, 40)
+cInvis        = color.new(color.white, 100)
+cEntryLnSell = color.new(#ef5350, 40)
+cEntryLnBuy  = color.new(#26a69a, 40)
+cSlLn        = color.new(#ff9800, 40)
+cTp1Ln       = color.new(#a5d6a7, 40)
+cTp2Ln       = color.new(#66bb6a, 40)
+cTp3Ln       = color.new(#00c853, 40)
+cCzLn        = color.new(#9c27b0, 40)
+cWin    = color.new(#00c853, 0)
+cLoss   = color.new(#d50000, 0)
+cCancel = color.new(#ffeb3b, 0)
+// Event marker ranglari
+cEvtIn   = color.new(#2196f3, 0)  // ko'k - IN
+cEvtSL   = color.new(#d50000, 0)  // qizil - SL
+cEvtTP1  = color.new(#66bb6a, 0)  // ochroq yashil - TP1
+cEvtTP2  = color.new(#43a047, 0)  // yashil - TP2
+cEvtTP3  = color.new(#00c853, 0)  // to'q yashil - TP3 WON
+cEvtBE   = color.new(#00bcd4, 0)  // cyan - BE
+cEvtCanc = color.new(#ffc107, 0)  // sariq - cancel
+
+// ==== SETUP TYPE ====
+type Setup
+    int   id           = 0
+    int   dir          = 0
+    float entry        = na
+    float sl           = na
+    float tp1          = na
+    float tp2          = na
+    float tp3          = na
+    float cz           = na
+    int   status       = 0
+    int   partialLevel = 0
+    bool  beMoved      = false
+    int   sigBar       = 0
+    int   fillBar      = 0
+    int   startBar     = 0
+    int   candleCount  = 0
+    float realizedUsd  = 0.0
+    float riskUsd      = 0.0
+    box   bx           = na
+    line  lnE          = na
+    line  lnSL         = na
+    line  lnTP1        = na
+    line  lnTP2        = na
+    line  lnTP3        = na
+    line  lnCZ         = na
+    label lblIN        = na
+    label lblExit      = na
+    label lblPT1       = na
+    label lblPT2       = na
+
+// ==== TOOLTIP HELPER ====
+buildTT(Setup s, string evt, float evtPrice, float pnlUsd) =>
+    dirTxt = s.dir < 0 ? "SELL" : "BUY"
+    line1 = "#" + str.tostring(s.id) + " " + dirTxt + " (" + str.tostring(s.candleCount) + "sv)"
+    line2 = " | " + evt + " @ " + str.tostring(evtPrice, format.mintick)
+    line3 = " | Entry:" + str.tostring(s.entry, format.mintick) + " SL:" + str.tostring(s.sl, format.mintick) + " CZ:" + str.tostring(s.cz, format.mintick)
+    line4 = " | TP1:" + str.tostring(s.tp1, format.mintick) + " TP2:" + str.tostring(s.tp2, format.mintick) + " TP3:" + str.tostring(s.tp3, format.mintick)
+    line5 = " | Risk: $" + str.tostring(s.riskUsd, "#.##") + " | Event P/L: $" + str.tostring(pnlUsd, "#.##") + " | Total P/L: $" + str.tostring(s.realizedUsd, "#.##")
+    line1 + line2 + line3 + line4 + line5
+
+// ==== STATE ====
+var array<Setup> setups   = array.new<Setup>(0)
+var int          nextId    = 0
+var int          wonCnt    = 0
+var int          lostCnt   = 0
+var int          cancelCnt = 0
+var int          partialCnt = 0
+var int          beCnt      = 0
+var float        totalR    = 0.0
+var float        totalUsd  = 0.0
+var float        bestUsd   = 0.0
+var float        worstUsd  = 0.0
+
+// ==== STREAK TRACKING ====
+var int   bullStreak     = 0
+var int   bearStreak     = 0
+var int   bullStartBar   = 0
+var int   bearStartBar   = 0
+var float bullFirstOpen  = na
+var float bearFirstOpen  = na
+
+isBull = close > open
+isBear = close < open
+
+if isBull
+    if bullStreak == 0
+        bullStartBar := bar_index
+        bullFirstOpen := open
+    bullStreak := bullStreak + 1
+    bearStreak := 0
+    bearFirstOpen := na
+else if isBear
+    if bearStreak == 0
+        bearStartBar := bar_index
+        bearFirstOpen := open
+    bearStreak := bearStreak + 1
+    bullStreak := 0
+    bullFirstOpen := na
+else
+    bullStreak := 0
+    bearStreak := 0
+    bullFirstOpen := na
+    bearFirstOpen := na
+
+// Setup: seriya >= min svecha + net direction to'g'ri
+sellSetup = barstate.isconfirmed and bullStreak >= minCandles and close > bullFirstOpen
+buySetup  = barstate.isconfirmed and bearStreak >= minCandles and close < bearFirstOpen
+
+txtSell(id) => "SELL #" + str.tostring(id)
+txtBuy(id)  => "BUY #" + str.tostring(id)
+
+// ==== 1) UPDATE SETUPS ====
+if array.size(setups) > 0
+    for i = 0 to array.size(setups) - 1
+        s = array.get(setups, i)
+        if s.sigBar < bar_index
+            if s.status == STATUS_PENDING
+                filled = s.entry >= low and s.entry <= high
+                if filled
+                    s.status := STATUS_FILLED
+                    s.fillBar := bar_index
+                    if showEventMk
+                        ttIN = buildTT(s, "FILL (IN)", s.entry, 0.0)
+                        s.lblIN := label.new(bar_index, s.entry, "IN", style=label.style_label_left, color=cEvtIn, textcolor=color.white, size=size.tiny, tooltip=ttIN)
+                    slHitNow = s.dir < 0 ? high >= s.sl : low <= s.sl
+                    if slHitNow
+                        s.status := STATUS_LOST
+                        lostCnt := lostCnt + 1
+                        totalR := totalR - 1.0
+                        pnlSL0 = -s.riskUsd
+                        s.realizedUsd := s.realizedUsd + pnlSL0
+                        totalUsd := totalUsd + pnlSL0
+                        worstUsd := math.min(worstUsd, s.realizedUsd)
+                        if not na(s.bx)
+                            box.set_border_color(s.bx, showBoxLost ? cBoxLostBd : cInvis)
+                            prefixL = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                            box.set_text(s.bx, prefixL + " SL tegdi")
+                            box.set_text_color(s.bx, showBoxLost ? color.white : cInvis)
+                        if showEventMk
+                            ttSL0 = buildTT(s, "SL", s.sl, pnlSL0)
+                            s.lblExit := label.new(bar_index, s.sl, "SL", style=label.style_label_left, color=cEvtSL, textcolor=color.white, size=size.tiny, tooltip=ttSL0)
+                else if barstate.isconfirmed
+                    czBroken = (s.dir < 0 and close > s.cz) or (s.dir > 0 and close < s.cz)
+                    if czBroken
+                        s.status := STATUS_CANCELLED
+                        cancelCnt := cancelCnt + 1
+                        if useStrat
+                            strategy.cancel("S" + str.tostring(s.id))
+                        if not na(s.bx)
+                            box.set_border_color(s.bx, showBoxCancel ? cBoxCancelBd : cInvis)
+                            prefixC = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                            box.set_text(s.bx, prefixC + " Bekor buldi")
+                            box.set_text_color(s.bx, showBoxCancel ? color.white : cInvis)
+                        if showEventMk
+                            ttCz = buildTT(s, "CANCEL (CZ)", close, 0.0)
+                            s.lblExit := label.new(bar_index, s.cz, "X", style=label.style_label_left, color=cEvtCanc, textcolor=color.black, size=size.tiny, tooltip=ttCz)
+            else if s.status == STATUS_FILLED
+                slHit = s.dir < 0 ? high >= s.sl : low <= s.sl
+                if slHit
+                    if s.beMoved
+                        // Break-even stop: TP1 tegib SL entry'ga siljigan edi, foyda bilan chiqdi
+                        s.status := STATUS_BE
+                        beCnt := beCnt + 1
+                        // totalR o'zgarmaydi (qolgan pozitsiyada 0R, TP1 partial oldindan qo'shilgan)
+                        // realizedUsd allaqachon TP1 (va ehtimol TP2) dan qo'shilgan — o'zgarmaydi
+                        bestUsd := math.max(bestUsd, s.realizedUsd)
+                        if not na(s.bx)
+                            box.set_border_color(s.bx, showBoxBe ? cBoxBeBd : cInvis)
+                            prefixBE = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                            beTxt = s.partialLevel == 1 ? " BE stop (TP1+)" : " BE stop (TP2+)"
+                            box.set_text(s.bx, prefixBE + beTxt)
+                            box.set_text_color(s.bx, showBoxBe ? color.white : cInvis)
+                        if showEventMk
+                            ttBe = buildTT(s, "BE stop", s.sl, 0.0)
+                            s.lblExit := label.new(bar_index, s.sl, "BE", style=label.style_label_left, color=cEvtBE, textcolor=color.white, size=size.tiny, tooltip=ttBe)
+                        if enableAlerts
+                            alert("Setup #" + str.tostring(s.id) + " BE stop: foyda bilan chiqdi ($" + str.tostring(s.realizedUsd, "#.##") + ")", alert.freq_once_per_bar)
+                    else
+                        s.status := STATUS_LOST
+                        lostCnt := lostCnt + 1
+                        remPct = 100.0
+                        if s.partialLevel == 1
+                            remPct := 100.0 - tp1Pct
+                        else if s.partialLevel == 2
+                            remPct := 100.0 - tp1Pct - tp2Pct
+                        totalR := totalR - (remPct / 100.0)
+                        pnlSL = -s.riskUsd * (remPct / 100.0)
+                        s.realizedUsd := s.realizedUsd + pnlSL
+                        totalUsd := totalUsd + pnlSL
+                        worstUsd := math.min(worstUsd, s.realizedUsd)
+                        if not na(s.bx)
+                            box.set_border_color(s.bx, showBoxLost ? cBoxLostBd : cInvis)
+                            prefixL2 = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                            slTxt = s.partialLevel > 0 ? " SL tegdi (partial)" : " SL tegdi"
+                            box.set_text(s.bx, prefixL2 + slTxt)
+                            box.set_text_color(s.bx, showBoxLost ? color.white : cInvis)
+                        if showEventMk
+                            ttSL = buildTT(s, "SL", s.sl, pnlSL)
+                            s.lblExit := label.new(bar_index, s.sl, "SL", style=label.style_label_left, color=cEvtSL, textcolor=color.white, size=size.tiny, tooltip=ttSL)
+                else
+                    if s.partialLevel == 0
+                        tp1Hit = s.dir < 0 ? low <= s.tp1 : high >= s.tp1
+                        if tp1Hit
+                            s.partialLevel := 1
+                            partialCnt := partialCnt + 1
+                            totalR := totalR + (tp1Pct / 100.0) * rrTP1
+                            pnlTP1 = s.riskUsd * (tp1Pct / 100.0) * rrTP1
+                            s.realizedUsd := s.realizedUsd + pnlTP1
+                            totalUsd := totalUsd + pnlTP1
+                            // BREAK-EVEN: TP1 tegdi, SL ni entry narxiga siljitish
+                            if enableBE
+                                s.sl := s.entry
+                                s.beMoved := true
+                                if not na(s.lnSL)
+                                    line.set_y1(s.lnSL, s.entry)
+                                    line.set_y2(s.lnSL, s.entry)
+                                    line.set_color(s.lnSL, cBeSlLn)
+                                    line.set_style(s.lnSL, line.style_dashed)
+                                if useStrat
+                                    strategy.exit("S" + str.tostring(s.id) + "_x", from_entry="S" + str.tostring(s.id), stop=s.entry, limit=s.tp2)
+                                if enableAlerts
+                                    alert("Setup #" + str.tostring(s.id) + " TP1 tegdi (+$" + str.tostring(pnlTP1, "#.##") + "), SL break-even'ga siljidi", alert.freq_once_per_bar)
+                            if not na(s.bx)
+                                prefixP1 = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                                p1Txt = enableBE ? " TP1 + BE siljidi" : " TP1 partial"
+                                box.set_text(s.bx, prefixP1 + p1Txt)
+                            if showEventMk
+                                ttT1 = buildTT(s, "TP1", s.tp1, pnlTP1)
+                                s.lblPT1 := label.new(bar_index, s.tp1, "TP1", style=label.style_label_left, color=cEvtTP1, textcolor=color.white, size=size.tiny, tooltip=ttT1)
+                            tp2Hit = s.dir < 0 ? low <= s.tp2 : high >= s.tp2
+                            if tp2Hit
+                                s.partialLevel := 2
+                                totalR := totalR + (tp2Pct / 100.0) * rrTP2
+                                pnlTP2a = s.riskUsd * (tp2Pct / 100.0) * rrTP2
+                                s.realizedUsd := s.realizedUsd + pnlTP2a
+                                totalUsd := totalUsd + pnlTP2a
+                                if not na(s.bx)
+                                    prefixP2 = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                                    box.set_text(s.bx, prefixP2 + " TP2 partial")
+                                if showEventMk
+                                    ttT2a = buildTT(s, "TP2", s.tp2, pnlTP2a)
+                                    s.lblPT2 := label.new(bar_index, s.tp2, "TP2", style=label.style_label_left, color=cEvtTP2, textcolor=color.white, size=size.tiny, tooltip=ttT2a)
+                                tp3Hit = s.dir < 0 ? low <= s.tp3 : high >= s.tp3
+                                if tp3Hit
+                                    s.status := STATUS_WON
+                                    wonCnt := wonCnt + 1
+                                    totalR := totalR + (tp3Pct / 100.0) * rrTP3
+                                    pnlTP3a = s.riskUsd * (tp3Pct / 100.0) * rrTP3
+                                    s.realizedUsd := s.realizedUsd + pnlTP3a
+                                    totalUsd := totalUsd + pnlTP3a
+                                    bestUsd := math.max(bestUsd, s.realizedUsd)
+                                    if not na(s.bx)
+                                        box.set_border_color(s.bx, showBoxWon ? cBoxWonBd : cInvis)
+                                        prefixW = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                                        box.set_text(s.bx, prefixW + " TP3 WON")
+                                        box.set_text_color(s.bx, showBoxWon ? color.white : cInvis)
+                                    if showEventMk
+                                        ttT3a = buildTT(s, "TP3 WON", s.tp3, pnlTP3a)
+                                        s.lblExit := label.new(bar_index, s.tp3, "TP3", style=label.style_label_left, color=cEvtTP3, textcolor=color.white, size=size.tiny, tooltip=ttT3a)
+                    else if s.partialLevel == 1
+                        tp2Hit2 = s.dir < 0 ? low <= s.tp2 : high >= s.tp2
+                        if tp2Hit2
+                            s.partialLevel := 2
+                            totalR := totalR + (tp2Pct / 100.0) * rrTP2
+                            pnlTP2b = s.riskUsd * (tp2Pct / 100.0) * rrTP2
+                            s.realizedUsd := s.realizedUsd + pnlTP2b
+                            totalUsd := totalUsd + pnlTP2b
+                            if not na(s.bx)
+                                prefixP22 = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                                box.set_text(s.bx, prefixP22 + " TP2 partial")
+                            if showEventMk
+                                ttT2b = buildTT(s, "TP2", s.tp2, pnlTP2b)
+                                s.lblPT2 := label.new(bar_index, s.tp2, "TP2", style=label.style_label_left, color=cEvtTP2, textcolor=color.white, size=size.tiny, tooltip=ttT2b)
+                            tp3Hit2 = s.dir < 0 ? low <= s.tp3 : high >= s.tp3
+                            if tp3Hit2
+                                s.status := STATUS_WON
+                                wonCnt := wonCnt + 1
+                                totalR := totalR + (tp3Pct / 100.0) * rrTP3
+                                pnlTP3b = s.riskUsd * (tp3Pct / 100.0) * rrTP3
+                                s.realizedUsd := s.realizedUsd + pnlTP3b
+                                totalUsd := totalUsd + pnlTP3b
+                                bestUsd := math.max(bestUsd, s.realizedUsd)
+                                if not na(s.bx)
+                                    box.set_border_color(s.bx, showBoxWon ? cBoxWonBd : cInvis)
+                                    prefixW2 = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                                    box.set_text(s.bx, prefixW2 + " TP3 WON")
+                                    box.set_text_color(s.bx, showBoxWon ? color.white : cInvis)
+                                if showEventMk
+                                    ttT3b = buildTT(s, "TP3 WON", s.tp3, pnlTP3b)
+                                    s.lblExit := label.new(bar_index, s.tp3, "TP3", style=label.style_label_left, color=cEvtTP3, textcolor=color.white, size=size.tiny, tooltip=ttT3b)
+                    else
+                        tp3Hit3 = s.dir < 0 ? low <= s.tp3 : high >= s.tp3
+                        if tp3Hit3
+                            s.status := STATUS_WON
+                            wonCnt := wonCnt + 1
+                            totalR := totalR + (tp3Pct / 100.0) * rrTP3
+                            pnlTP3c = s.riskUsd * (tp3Pct / 100.0) * rrTP3
+                            s.realizedUsd := s.realizedUsd + pnlTP3c
+                            totalUsd := totalUsd + pnlTP3c
+                            bestUsd := math.max(bestUsd, s.realizedUsd)
+                            if not na(s.bx)
+                                box.set_border_color(s.bx, showBoxWon ? cBoxWonBd : cInvis)
+                                prefixW3 = s.dir < 0 ? txtSell(s.id) : txtBuy(s.id)
+                                box.set_text(s.bx, prefixW3 + " TP3 WON")
+                                box.set_text_color(s.bx, showBoxWon ? color.white : cInvis)
+                            if showEventMk
+                                ttT3c = buildTT(s, "TP3 WON", s.tp3, pnlTP3c)
+                                s.lblExit := label.new(bar_index, s.tp3, "TP3", style=label.style_label_left, color=cEvtTP3, textcolor=color.white, size=size.tiny, tooltip=ttT3c)
+
+// ==== 2) ROLLING CANCEL ====
+if sellSetup and array.size(setups) > 0
+    for k = 0 to array.size(setups) - 1
+        s2 = array.get(setups, k)
+        if s2.status == STATUS_PENDING and s2.dir == -1
+            s2.status := STATUS_CANCELLED
+            cancelCnt := cancelCnt + 1
+            if useStrat
+                strategy.cancel("S" + str.tostring(s2.id))
+            if not na(s2.bx)
+                box.set_border_color(s2.bx, showBoxCancel ? cBoxCancelBd : cInvis)
+                box.set_text(s2.bx, txtSell(s2.id) + " Bekor buldi (rolling)")
+                box.set_text_color(s2.bx, showBoxCancel ? color.white : cInvis)
+            if showEventMk
+                ttRc1 = buildTT(s2, "CANCEL (rolling)", close, 0.0)
+                s2.lblExit := label.new(bar_index, s2.cz, "X", style=label.style_label_left, color=cEvtCanc, textcolor=color.black, size=size.tiny, tooltip=ttRc1)
+
+if buySetup and array.size(setups) > 0
+    for k = 0 to array.size(setups) - 1
+        s2 = array.get(setups, k)
+        if s2.status == STATUS_PENDING and s2.dir == 1
+            s2.status := STATUS_CANCELLED
+            cancelCnt := cancelCnt + 1
+            if useStrat
+                strategy.cancel("S" + str.tostring(s2.id))
+            if not na(s2.bx)
+                box.set_border_color(s2.bx, showBoxCancel ? cBoxCancelBd : cInvis)
+                box.set_text(s2.bx, txtBuy(s2.id) + " Bekor buldi (rolling)")
+                box.set_text_color(s2.bx, showBoxCancel ? color.white : cInvis)
+            if showEventMk
+                ttRc2 = buildTT(s2, "CANCEL (rolling)", close, 0.0)
+                s2.lblExit := label.new(bar_index, s2.cz, "X", style=label.style_label_left, color=cEvtCanc, textcolor=color.black, size=size.tiny, tooltip=ttRc2)
+
+// ==== 3) SELL SETUP (bullish series) ====
+if sellSetup
+    nextId := nextId + 1
+    id = nextId
+    boxTop = math.max(bullFirstOpen, close)
+    boxBot = math.min(bullFirstOpen, close)
+    rng    = boxTop - boxBot
+    ePrice   = bullFirstOpen
+    slPrice  = boxTop - fibSL  * rng
+    tp1Price = boxTop - fibTP1 * rng
+    tp2Price = boxTop - fibTP2 * rng
+    tp3Price = boxTop - fibTP3 * rng
+    czPrice  = close
+    startBar = bullStartBar
+    cCount = bullStreak
+    initTxt = "SELL #" + str.tostring(id) + " (" + str.tostring(cCount) + "sv) paydo buldi"
+    bx = box.new(startBar, boxTop, bar_index, boxBot, border_color=(showBoxPending ? cBoxPendingBd : cInvis), border_width=2, bgcolor=cInvis, text=initTxt, text_color=(showBoxPending ? color.white : cInvis), text_size=size.small, text_halign=text.align_center, text_valign=text.align_center)
+    line lnE = na
+    line lnSL = na
+    line lnTP1 = na
+    line lnTP2 = na
+    line lnTP3 = na
+    line lnCZ = na
+    if showEntryLn
+        lnE := line.new(startBar, ePrice, bar_index, ePrice, color=cEntryLnSell, width=1)
+    if showSlLn
+        lnSL := line.new(startBar, slPrice, bar_index, slPrice, color=cSlLn, width=1)
+    if showTp1Ln
+        lnTP1 := line.new(startBar, tp1Price, bar_index, tp1Price, color=cTp1Ln, width=1, style=line.style_dashed)
+    if showTp2Ln
+        lnTP2 := line.new(startBar, tp2Price, bar_index, tp2Price, color=cTp2Ln, width=1, style=line.style_dashed)
+    if showTp3Ln
+        lnTP3 := line.new(startBar, tp3Price, bar_index, tp3Price, color=cTp3Ln, width=1, style=line.style_dashed)
+    if showCzLn
+        lnCZ := line.new(startBar, czPrice, bar_index, czPrice, color=cCzLn, width=1, style=line.style_dotted)
+    s = Setup.new()
+    s.id           := id
+    s.dir          := -1
+    s.entry        := ePrice
+    s.sl           := slPrice
+    s.tp1          := tp1Price
+    s.tp2          := tp2Price
+    s.tp3          := tp3Price
+    s.cz           := czPrice
+    s.status       := STATUS_PENDING
+    s.partialLevel := 0
+    s.sigBar       := bar_index
+    s.startBar     := startBar
+    s.candleCount  := cCount
+    s.riskUsd      := riskDollar
+    s.bx           := bx
+    s.lnE          := lnE
+    s.lnSL         := lnSL
+    s.lnTP1        := lnTP1
+    s.lnTP2        := lnTP2
+    s.lnTP3        := lnTP3
+    s.lnCZ         := lnCZ
+    array.push(setups, s)
+    if useStrat
+        strategy.entry("S" + str.tostring(id), strategy.short, stop=ePrice)
+        strategy.exit("S" + str.tostring(id) + "_x", from_entry="S" + str.tostring(id), stop=slPrice, limit=tp2Price)
+    if enableAlerts
+        alert("SELL Seriya #" + str.tostring(id) + " (" + str.tostring(cCount) + " svecha) paydo buldi", alert.freq_once_per_bar)
+
+// ==== 4) BUY SETUP (bearish series) ====
+if buySetup
+    nextId := nextId + 1
+    id2 = nextId
+    boxTop2 = math.max(bearFirstOpen, close)
+    boxBot2 = math.min(bearFirstOpen, close)
+    rng2    = boxTop2 - boxBot2
+    ePrice2   = bearFirstOpen
+    slPrice2  = boxBot2 + fibSL  * rng2
+    tp1Price2 = boxBot2 + fibTP1 * rng2
+    tp2Price2 = boxBot2 + fibTP2 * rng2
+    tp3Price2 = boxBot2 + fibTP3 * rng2
+    czPrice2  = close
+    startBar2 = bearStartBar
+    cCount2 = bearStreak
+    initTxt2 = "BUY #" + str.tostring(id2) + " (" + str.tostring(cCount2) + "sv) paydo buldi"
+    bx2 = box.new(startBar2, boxTop2, bar_index, boxBot2, border_color=(showBoxPending ? cBoxPendingBd : cInvis), border_width=2, bgcolor=cInvis, text=initTxt2, text_color=(showBoxPending ? color.white : cInvis), text_size=size.small, text_halign=text.align_center, text_valign=text.align_center)
+    line lnE2 = na
+    line lnSL2 = na
+    line lnTP12 = na
+    line lnTP22 = na
+    line lnTP32 = na
+    line lnCZ2 = na
+    if showEntryLn
+        lnE2 := line.new(startBar2, ePrice2, bar_index, ePrice2, color=cEntryLnBuy, width=1)
+    if showSlLn
+        lnSL2 := line.new(startBar2, slPrice2, bar_index, slPrice2, color=cSlLn, width=1)
+    if showTp1Ln
+        lnTP12 := line.new(startBar2, tp1Price2, bar_index, tp1Price2, color=cTp1Ln, width=1, style=line.style_dashed)
+    if showTp2Ln
+        lnTP22 := line.new(startBar2, tp2Price2, bar_index, tp2Price2, color=cTp2Ln, width=1, style=line.style_dashed)
+    if showTp3Ln
+        lnTP32 := line.new(startBar2, tp3Price2, bar_index, tp3Price2, color=cTp3Ln, width=1, style=line.style_dashed)
+    if showCzLn
+        lnCZ2 := line.new(startBar2, czPrice2, bar_index, czPrice2, color=cCzLn, width=1, style=line.style_dotted)
+    s2 = Setup.new()
+    s2.id           := id2
+    s2.dir          := 1
+    s2.entry        := ePrice2
+    s2.sl           := slPrice2
+    s2.tp1          := tp1Price2
+    s2.tp2          := tp2Price2
+    s2.tp3          := tp3Price2
+    s2.cz           := czPrice2
+    s2.status       := STATUS_PENDING
+    s2.partialLevel := 0
+    s2.sigBar       := bar_index
+    s2.startBar     := startBar2
+    s2.candleCount  := cCount2
+    s2.riskUsd      := riskDollar
+    s2.bx           := bx2
+    s2.lnE          := lnE2
+    s2.lnSL         := lnSL2
+    s2.lnTP1        := lnTP12
+    s2.lnTP2        := lnTP22
+    s2.lnTP3        := lnTP32
+    s2.lnCZ         := lnCZ2
+    array.push(setups, s2)
+    if useStrat
+        strategy.entry("S" + str.tostring(id2), strategy.long, stop=ePrice2)
+        strategy.exit("S" + str.tostring(id2) + "_x", from_entry="S" + str.tostring(id2), stop=slPrice2, limit=tp2Price2)
+    if enableAlerts
+        alert("BUY Seriya #" + str.tostring(id2) + " (" + str.tostring(cCount2) + " svecha) paydo buldi", alert.freq_once_per_bar)
+
+// ==== 5) CLEANUP ====
+if array.size(setups) > maxVisible
+    deleteCount = array.size(setups) - maxVisible
+    for j = 0 to deleteCount - 1
+        oldS = array.get(setups, j)
+        if not na(oldS.bx)
+            box.delete(oldS.bx)
+            oldS.bx := na
+        if not na(oldS.lnE)
+            line.delete(oldS.lnE)
+            oldS.lnE := na
+        if not na(oldS.lnSL)
+            line.delete(oldS.lnSL)
+            oldS.lnSL := na
+        if not na(oldS.lnTP1)
+            line.delete(oldS.lnTP1)
+            oldS.lnTP1 := na
+        if not na(oldS.lnTP2)
+            line.delete(oldS.lnTP2)
+            oldS.lnTP2 := na
+        if not na(oldS.lnTP3)
+            line.delete(oldS.lnTP3)
+            oldS.lnTP3 := na
+        if not na(oldS.lnCZ)
+            line.delete(oldS.lnCZ)
+            oldS.lnCZ := na
+        if not na(oldS.lblIN)
+            label.delete(oldS.lblIN)
+            oldS.lblIN := na
+        if not na(oldS.lblExit)
+            label.delete(oldS.lblExit)
+            oldS.lblExit := na
+        if not na(oldS.lblPT1)
+            label.delete(oldS.lblPT1)
+            oldS.lblPT1 := na
+        if not na(oldS.lblPT2)
+            label.delete(oldS.lblPT2)
+            oldS.lblPT2 := na
+
+// ==== 6) STATISTIKA ====
+var table stats = table.new(position.top_right, 2, 20, bgcolor=color.new(color.black, 20), border_width=1)
+
+if showStats
+    totalT     = wonCnt + lostCnt + beCnt
+    winRate    = totalT > 0 ? (wonCnt / totalT) * 100.0 : 0.0
+    profitRate = totalT > 0 ? ((wonCnt + beCnt) / totalT) * 100.0 : 0.0
+    fillPct    = nextId > 0 ? (totalT / nextId) * 100.0 : 0.0
+    activeCnt  = nextId - wonCnt - lostCnt - cancelCnt - beCnt
+
+    table.cell(stats, 0, 0,  "SERIYA STATISTIKA", bgcolor=color.new(color.blue, 40), text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 0,  "", bgcolor=color.new(color.blue, 40))
+    table.cell(stats, 0, 1,  "Min svechalar", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 1,  str.tostring(minCandles), text_color=color.yellow, text_size=size.small)
+    table.cell(stats, 0, 2,  "Jami", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 2,  str.tostring(nextId), text_color=color.white, text_size=size.small)
+    table.cell(stats, 0, 3,  "TP3 (WON)", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 3,  str.tostring(wonCnt), text_color=cWin, text_size=size.small)
+    table.cell(stats, 0, 4,  "TP1 partial", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 4,  str.tostring(partialCnt), text_color=cFillEvt, text_size=size.small)
+    table.cell(stats, 0, 5,  "BE stop", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 5,  str.tostring(beCnt), text_color=cBE, text_size=size.small)
+    table.cell(stats, 0, 6,  "SL (LOST)", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 6,  str.tostring(lostCnt), text_color=cLoss, text_size=size.small)
+    table.cell(stats, 0, 7,  "Bekor", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 7,  str.tostring(cancelCnt), text_color=cCancel, text_size=size.small)
+    table.cell(stats, 0, 8,  "Aktiv", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 8,  str.tostring(activeCnt), text_color=color.yellow, text_size=size.small)
+    table.cell(stats, 0, 9,  "Win Rate", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 9,  str.tostring(winRate, "#.##") + "%", text_color=winRate >= 50 ? cWin : cLoss, text_size=size.small)
+    table.cell(stats, 0, 10, "Profit Rate", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 10, str.tostring(profitRate, "#.##") + "%", text_color=profitRate >= 50 ? cWin : cLoss, text_size=size.small)
+    table.cell(stats, 0, 11, "Fill Rate", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 11, str.tostring(fillPct, "#.##") + "%", text_color=color.white, text_size=size.small)
+    table.cell(stats, 0, 12, "Bitim", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 12, str.tostring(totalT), text_color=color.white, text_size=size.small)
+    table.cell(stats, 0, 13, "Profit (R)", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 13, str.tostring(totalR, "#.##") + " R", text_color=totalR >= 0 ? cWin : cLoss, text_size=size.small)
+    table.cell(stats, 0, 14, "R/R", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 14, str.tostring(rrTP1, "#.##") + "/" + str.tostring(rrTP2, "#.##") + "/" + str.tostring(rrTP3, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(stats, 0, 15, "Strat Profit", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 15, str.tostring(strategy.netprofit, "#.##"), text_color=strategy.netprofit >= 0 ? cWin : cLoss, text_size=size.small)
+    table.cell(stats, 0, 16, "Risk / bitim", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 16, "$" + str.tostring(riskDollar, "#.##"), text_color=color.orange, text_size=size.small)
+    table.cell(stats, 0, 17, "TOTAL P/L ($)", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 17, "$" + str.tostring(totalUsd, "#.##"), text_color=totalUsd >= 0 ? cWin : cLoss, text_size=size.small)
+    table.cell(stats, 0, 18, "Best trade ($)", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 18, "$" + str.tostring(bestUsd, "#.##"), text_color=cWin, text_size=size.small)
+    table.cell(stats, 0, 19, "Worst trade ($)", text_color=color.white, text_size=size.small)
+    table.cell(stats, 1, 19, "$" + str.tostring(worstUsd, "#.##"), text_color=cLoss, text_size=size.small)
+
+alertcondition(sellSetup, title="SELL Seriya", message="SELL seriya setup paydo buldi")
+alertcondition(buySetup,  title="BUY Seriya",  message="BUY seriya setup paydo buldi")
