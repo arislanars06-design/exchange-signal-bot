@@ -32,6 +32,25 @@ class StrategyEngine:
         self._next_id = 1
 
     # ==================================================================
+    # SILENT WARMUP - bot birinchi start'da tarixiy candles'ni
+    # streak holatini qurish uchun ishlatadi, lekin setup yaratmaydi
+    # va Telegram alertlarini yubormaydi.
+    # ==================================================================
+
+    def process_closed_candle_silent(self, pair: str, timeframe: str,
+                                     candle: Candle) -> None:
+        """
+        Tarixiy svechani QAYTA ishlash - faqat streak update.
+        Setup yaratmaydi va event qaytarmaydi.
+        Cold start'da spam'ning oldini olish uchun.
+        """
+        streak = self.get_or_create_streak(pair, timeframe)
+        if candle.timestamp_ms <= streak.last_processed_ms:
+            return
+        self._update_streak(streak, candle)
+        streak.last_processed_ms = candle.timestamp_ms
+
+    # ==================================================================
     # HOLAT BOSHQARUVI
     # ==================================================================
 

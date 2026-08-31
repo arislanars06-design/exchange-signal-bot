@@ -57,6 +57,45 @@ signal.signal(signal.SIGTERM, _handle_signal)
 # ASOSIY
 # ==============================
 
+def warmup(
+    engine: StrategyEngine,
+    exchange: BinanceFutures,
+    config,
+) -> None:
+    """
+    Cold start (bo'sh state) uchun tarixiy svechalarni jimgina qayta ishlab,
+    streak holatini qurish. Bu spam'ning oldini oladi:
+    Bot yoqilganda tarixiy setuplar Telegram'ga yuborilmaydi -
+    faqat KELAJAKDAGI yangi setuplar alert qiladi.
+    """
+    if engine.streaks:
+        logger.info("Warmup o'tkazilmadi - state fayldan yuklandi")
+        return
+
+    logger.info("Warmup boshlandi - tarixiy svechalar (silent, no alerts)...")
+    total = 0
+    now_ms = int(time.time() * 1000)
+
+    for pair in config.pairs:
+        for tf in config.timeframes:
+            try:
+                candles = exchange.fetch_candles(pair, tf, limit=100)
+            except Exception as e:
+                logger.warning(f"[{pair} {tf}] warmup fetch xatosi: {e}")
+                continue
+            tf_ms = _timeframe_to_ms(tf)
+            for c in candles:
+                # Faqat to'liq yopilgan svechalar
+                if c.timestamp_ms + tf_ms <= now_ms:
+                    engine.process_closed_candle_silent(pair, tf, c)
+                    total += 1
+            logger.debug(f"[{pair} {tf}] warmup: {len(candles)} sv")
+
+    logger.info(f"Warmup tugadi: {total} tarixiy svecha ishlandi, "
+                f"{len(engine.streaks)} streak state qurildi. "
+                f"Endi faqat YANGI setuplar alert qiladi.")
+
+
 def process_pair_timeframe(
     engine: StrategyEngine,
     exchange: BinanceFutures,
@@ -154,6 +193,13 @@ def main() -> int:
 
     # Eski holatni yuklash
     state_mgr.load(engine)
+
+    # SILENT WARMUP - agar cold start bo'lsa, tarixiy svechalarni jimgina
+    # ishlash. Bu Telegram spam'ning oldini oladi.
+    try:
+        warmup(engine, exchange, config)
+    except Exception as e:
+        logger.warning(f"Warmup xatosi (davom etamiz): {e}")
 
     # Startup xabari
     notifier.send_startup(config.pairs, config.timeframes, config.min_candles)
