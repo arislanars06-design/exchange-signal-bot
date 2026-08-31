@@ -14,13 +14,27 @@ def _get_str(key: str, default: str = "") -> str:
 
 
 def _get_int(key: str, default: int) -> int:
-    val = os.getenv(key)
-    return int(val) if val else default
+    val = os.getenv(key, "").strip()
+    if not val:
+        return default
+    # Vergul va nuqta ikkalasini ham qo'llab-quvvatlash (locale-safe)
+    val = val.replace(",", ".").strip()
+    try:
+        return int(float(val))
+    except ValueError as e:
+        raise ValueError(f"{key} raqam emas: '{os.getenv(key)}' ({e})")
 
 
 def _get_float(key: str, default: float) -> float:
-    val = os.getenv(key)
-    return float(val) if val else default
+    val = os.getenv(key, "").strip()
+    if not val:
+        return default
+    # Vergul va nuqta ikkalasini ham qo'llab-quvvatlash (locale-safe)
+    val = val.replace(",", ".").strip()
+    try:
+        return float(val)
+    except ValueError as e:
+        raise ValueError(f"{key} raqam emas: '{os.getenv(key)}' ({e})")
 
 
 def _get_bool(key: str, default: bool) -> bool:
