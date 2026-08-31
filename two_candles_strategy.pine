@@ -141,40 +141,24 @@ var float        totalUsd  = 0.0
 var float        bestUsd   = 0.0
 var float        worstUsd  = 0.0
 
-// ==== STREAK TRACKING ====
+// ==== STREAK TRACKING (state) ====
 var int   bullStreak     = 0
 var int   bearStreak     = 0
 var int   bullStartBar   = 0
 var int   bearStartBar   = 0
 var float bullFirstOpen  = na
 var float bearFirstOpen  = na
+var float bullLastClose  = na
+var float bearLastClose  = na
 
 isBull = close > open
 isBear = close < open
 
-if isBull
-    if bullStreak == 0
-        bullStartBar := bar_index
-        bullFirstOpen := open
-    bullStreak := bullStreak + 1
-    bearStreak := 0
-    bearFirstOpen := na
-else if isBear
-    if bearStreak == 0
-        bearStartBar := bar_index
-        bearFirstOpen := open
-    bearStreak := bearStreak + 1
-    bullStreak := 0
-    bullFirstOpen := na
-else
-    bullStreak := 0
-    bearStreak := 0
-    bullFirstOpen := na
-    bearFirstOpen := na
-
-// Setup: seriya >= min svecha + net direction to'g'ri
-sellSetup = barstate.isconfirmed and bullStreak >= minCandles and close > bullFirstOpen
-buySetup  = barstate.isconfirmed and bearStreak >= minCandles and close < bearFirstOpen
+// Setup detection — REVERSAL rejimi (streak update'dan OLDIN, eski state bilan):
+// SELL: bullStreak >= min VA joriy svecha BEARISH (qarama-qarshi reversal)
+// BUY:  bearStreak >= min VA joriy svecha BULLISH (qarama-qarshi reversal)
+sellSetup = barstate.isconfirmed and bullStreak >= minCandles and isBear and not na(bullFirstOpen) and not na(bullLastClose) and bullLastClose > bullFirstOpen
+buySetup  = barstate.isconfirmed and bearStreak >= minCandles and isBull and not na(bearFirstOpen) and not na(bearLastClose) and bearLastClose < bearFirstOpen
 
 txtSell(id) => "SELL #" + str.tostring(id)
 txtBuy(id)  => "BUY #" + str.tostring(id)
@@ -410,22 +394,23 @@ if buySetup and array.size(setups) > 0
                 ttRc2 = buildTT(s2, "CANCEL (rolling)", close, 0.0)
                 s2.lblExit := label.new(bar_index, s2.cz, "X", style=label.style_label_left, color=cEvtCanc, textcolor=color.black, size=size.tiny, tooltip=ttRc2)
 
-// ==== 3) SELL SETUP (bullish series) ====
+// ==== 3) SELL SETUP (bullish series + BEARISH reversal) ====
 if sellSetup
     nextId := nextId + 1
     id = nextId
-    boxTop = math.max(bullFirstOpen, close)
-    boxBot = math.min(bullFirstOpen, close)
+    // Box: bullFirstOpen (bot) va bullLastClose (top) bilan
+    boxTop = math.max(bullFirstOpen, bullLastClose)
+    boxBot = math.min(bullFirstOpen, bullLastClose)
     rng    = boxTop - boxBot
     ePrice   = bullFirstOpen
     slPrice  = boxTop - fibSL  * rng
     tp1Price = boxTop - fibTP1 * rng
     tp2Price = boxTop - fibTP2 * rng
     tp3Price = boxTop - fibTP3 * rng
-    czPrice  = close
+    czPrice  = slPrice  // CZ = SL (streak chekkasi)
     startBar = bullStartBar
     cCount = bullStreak
-    initTxt = "SELL #" + str.tostring(id) + " (" + str.tostring(cCount) + "sv) paydo buldi"
+    initTxt = "SELL #" + str.tostring(id) + " (" + str.tostring(cCount) + "sv+rev) paydo buldi"
     bx = box.new(startBar, boxTop, bar_index, boxBot, border_color=(showBoxPending ? cBoxPendingBd : cInvis), border_width=2, bgcolor=cInvis, text=initTxt, text_color=(showBoxPending ? color.white : cInvis), text_size=size.small, text_halign=text.align_center, text_valign=text.align_center)
     line lnE = na
     line lnSL = na
@@ -472,24 +457,25 @@ if sellSetup
         strategy.entry("S" + str.tostring(id), strategy.short, stop=ePrice)
         strategy.exit("S" + str.tostring(id) + "_x", from_entry="S" + str.tostring(id), stop=slPrice, limit=tp2Price)
     if enableAlerts
-        alert("SELL Seriya #" + str.tostring(id) + " (" + str.tostring(cCount) + " svecha) paydo buldi", alert.freq_once_per_bar)
+        alert("SELL Reversal #" + str.tostring(id) + " (" + str.tostring(cCount) + "sv bullish + bearish reversal)", alert.freq_once_per_bar)
 
-// ==== 4) BUY SETUP (bearish series) ====
+// ==== 4) BUY SETUP (bearish series + BULLISH reversal) ====
 if buySetup
     nextId := nextId + 1
     id2 = nextId
-    boxTop2 = math.max(bearFirstOpen, close)
-    boxBot2 = math.min(bearFirstOpen, close)
+    // Box: bearFirstOpen (top) va bearLastClose (bot) bilan
+    boxTop2 = math.max(bearFirstOpen, bearLastClose)
+    boxBot2 = math.min(bearFirstOpen, bearLastClose)
     rng2    = boxTop2 - boxBot2
     ePrice2   = bearFirstOpen
     slPrice2  = boxBot2 + fibSL  * rng2
     tp1Price2 = boxBot2 + fibTP1 * rng2
     tp2Price2 = boxBot2 + fibTP2 * rng2
     tp3Price2 = boxBot2 + fibTP3 * rng2
-    czPrice2  = close
+    czPrice2  = slPrice2  // CZ = SL (streak chekkasi)
     startBar2 = bearStartBar
     cCount2 = bearStreak
-    initTxt2 = "BUY #" + str.tostring(id2) + " (" + str.tostring(cCount2) + "sv) paydo buldi"
+    initTxt2 = "BUY #" + str.tostring(id2) + " (" + str.tostring(cCount2) + "sv+rev) paydo buldi"
     bx2 = box.new(startBar2, boxTop2, bar_index, boxBot2, border_color=(showBoxPending ? cBoxPendingBd : cInvis), border_width=2, bgcolor=cInvis, text=initTxt2, text_color=(showBoxPending ? color.white : cInvis), text_size=size.small, text_halign=text.align_center, text_valign=text.align_center)
     line lnE2 = na
     line lnSL2 = na
@@ -536,7 +522,37 @@ if buySetup
         strategy.entry("S" + str.tostring(id2), strategy.long, stop=ePrice2)
         strategy.exit("S" + str.tostring(id2) + "_x", from_entry="S" + str.tostring(id2), stop=slPrice2, limit=tp2Price2)
     if enableAlerts
-        alert("BUY Seriya #" + str.tostring(id2) + " (" + str.tostring(cCount2) + " svecha) paydo buldi", alert.freq_once_per_bar)
+        alert("BUY Reversal #" + str.tostring(id2) + " (" + str.tostring(cCount2) + "sv bearish + bullish reversal)", alert.freq_once_per_bar)
+
+// ==== 4.5) STREAK UPDATE (setup detektsiyasidan KEYIN) ====
+// Muhim: bu blok setup blokidan keyin turishi kerak, chunki reversal
+// detektsiyasi ESKI streak state'ni ishlatadi (bullStreak, bullLastClose).
+if isBull
+    if bullStreak == 0
+        bullStartBar := bar_index
+        bullFirstOpen := open
+    bullStreak := bullStreak + 1
+    bullLastClose := close
+    bearStreak := 0
+    bearFirstOpen := na
+    bearLastClose := na
+else if isBear
+    if bearStreak == 0
+        bearStartBar := bar_index
+        bearFirstOpen := open
+    bearStreak := bearStreak + 1
+    bearLastClose := close
+    bullStreak := 0
+    bullFirstOpen := na
+    bullLastClose := na
+else
+    // Doji — ikkalasini reset
+    bullStreak := 0
+    bearStreak := 0
+    bullFirstOpen := na
+    bearFirstOpen := na
+    bullLastClose := na
+    bearLastClose := na
 
 // ==== 5) CLEANUP ====
 if array.size(setups) > maxVisible
@@ -628,5 +644,5 @@ if showStats
     table.cell(stats, 0, 19, "Worst trade ($)", text_color=color.white, text_size=size.small)
     table.cell(stats, 1, 19, "$" + str.tostring(worstUsd, "#.##"), text_color=cLoss, text_size=size.small)
 
-alertcondition(sellSetup, title="SELL Seriya", message="SELL seriya setup paydo buldi")
-alertcondition(buySetup,  title="BUY Seriya",  message="BUY seriya setup paydo buldi")
+alertcondition(sellSetup, title="SELL Reversal", message="SELL reversal setup (streak + reversal candle)")
+alertcondition(buySetup,  title="BUY Reversal",  message="BUY reversal setup (streak + reversal candle)")
