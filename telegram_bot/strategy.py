@@ -256,17 +256,23 @@ class StrategyEngine:
         box_bot = min(first_open, last_close)
         rng = box_top - box_bot
 
+        # SL buffer - kichik wick'lar SL ni urib ketmasligi uchun
+        # 0.01% default (SELL: yuqoriroqqa, BUY: pastroqqa siljitish)
+        buffer_mult = cfg.sl_buffer_pct / 100.0
+
         if direction == Direction.SELL.value:
             # fib 0 = top (streak tepasi = SL), fib 1 = bot (streak boshi = Entry)
             entry = first_open   # fib 1
-            sl = box_top - cfg.fib_sl * rng  # fib 0 (~box_top)
+            sl_base = box_top - cfg.fib_sl * rng  # fib 0 (~box_top)
+            sl = sl_base * (1 + buffer_mult)      # buffer yuqoriga (SL uzoqroq)
             tp1 = box_top - cfg.fib_tp1 * rng
             tp2 = box_top - cfg.fib_tp2 * rng
             tp3 = box_top - cfg.fib_tp3 * rng
         else:
             # fib 0 = bot (streak tagi = SL), fib 1 = top (streak boshi = Entry)
             entry = first_open   # fib 1
-            sl = box_bot + cfg.fib_sl * rng  # fib 0 (~box_bot)
+            sl_base = box_bot + cfg.fib_sl * rng  # fib 0 (~box_bot)
+            sl = sl_base * (1 - buffer_mult)      # buffer pastga (SL uzoqroq)
             tp1 = box_bot + cfg.fib_tp1 * rng
             tp2 = box_bot + cfg.fib_tp2 * rng
             tp3 = box_bot + cfg.fib_tp3 * rng

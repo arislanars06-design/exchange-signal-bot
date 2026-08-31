@@ -75,6 +75,10 @@ class Config:
     fib_tp2: float = field(default_factory=lambda: _get_float("FIB_TP2", 2.618))
     fib_tp3: float = field(default_factory=lambda: _get_float("FIB_TP3", 3.618))
 
+    # SL buffer (foizda) - wick urib ketmasligi uchun SL ni uzoqroqqa siljitish
+    # Default 0.01% (SELL: yuqoriroqqa, BUY: pastroqqa)
+    sl_buffer_pct: float = field(default_factory=lambda: _get_float("SL_BUFFER_PCT", 0.01))
+
     # Partial close foizlari
     tp1_pct: float = field(default_factory=lambda: _get_float("TP1_PCT", 50.0))
     tp2_pct: float = field(default_factory=lambda: _get_float("TP2_PCT", 25.0))
