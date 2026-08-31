@@ -20,7 +20,14 @@ class StateManager:
     VERSION = 1
 
     def __init__(self, path: str):
-        self.path = Path(path).expanduser().resolve()
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            # Nisbiy yo'l: skriptning papkasiga nisbatan qaraymiz.
+            # Bu foydalanuvchi qayerdan bot'ni ishga tushirsa ham
+            # state.json bir joyda qoladi (deploy papkasida).
+            script_dir = Path(__file__).parent.resolve()
+            p = script_dir / p
+        self.path = p.resolve()
 
     def load(self, engine: StrategyEngine) -> bool:
         """Fayl mavjud bo'lsa - engine'ga yuklaydi. True agar yuklandi."""
