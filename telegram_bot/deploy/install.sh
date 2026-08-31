@@ -44,9 +44,17 @@ mkdir -p "$INSTALL_DIR"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # .env faylini himoya qilish - eskisini qayta yozmaslik
-for f in main.py config.py exchange.py strategy.py telegram_bot.py state.py models.py requirements.txt; do
+for f in main.py config.py exchange.py exchange_yahoo.py strategy.py telegram_bot.py state.py models.py requirements.txt; do
     if [[ -f "$SCRIPT_DIR/$f" ]]; then
         cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f"
+    fi
+done
+
+# Eski *.py fayllar (agar bo'lsa) - kelajakda yangi fayllar qo'shilsa avtomatik nusxalash
+# Faqat telegram_bot papkasidagi .py fayllarni
+for f in "$SCRIPT_DIR"/*.py; do
+    if [[ -f "$f" ]]; then
+        cp "$f" "$INSTALL_DIR/$(basename $f)"
     fi
 done
 
