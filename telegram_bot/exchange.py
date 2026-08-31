@@ -42,19 +42,39 @@ class BinanceFutures:
                 logger.error(f"load_markets xatosi: {e}")
                 raise
 
+    def _normalize(self, pair: str) -> str:
+        """
+        Foydalanuvchi kiritgan `BTC/USDT` ni ccxt USDT-M futures uchun
+        kanonik formatga (`BTC/USDT:USDT`) aylantiradi.
+        Agar allaqachon `:` bor bo'lsa - o'zgartirmaydi.
+        """
+        if ":" in pair:
+            return pair
+        if "/" not in pair:
+            return pair
+        base, quote = pair.split("/", 1)
+        # USDT-M perpetual: settle = quote (linear)
+        return f"{base}/{quote}:{quote}"
+
     def check_pair(self, pair: str) -> bool:
-        """Juftlik Binance Futures'da bormi tekshirish."""
+        """Juftlik Binance Futures'da bormi tekshirish (ikki formatda)."""
         self.load_markets()
-        return pair in self.exchange.markets
+        # Avval original formatda
+        if pair in self.exchange.markets:
+            return True
+        # Keyin normalizatsiya qilingan formatda
+        norm = self._normalize(pair)
+        return norm in self.exchange.markets
 
     def fetch_candles(self, pair: str, timeframe: str, limit: int = 100) -> List[Candle]:
         """
         Oxirgi `limit` ta yopilgan svechalarni oladi.
         Qaytadigan ro'yxat: eski → yangi tartibda.
         """
+        norm = self._normalize(pair)
         try:
             # ccxt fetch_ohlcv: [[ts, open, high, low, close, volume], ...]
-            raw = self.exchange.fetch_ohlcv(pair, timeframe=timeframe, limit=limit)
+            raw = self.exchange.fetch_ohlcv(norm, timeframe=timeframe, limit=limit)
         except ccxt.NetworkError as e:
             logger.warning(f"[{pair} {timeframe}] Network xatosi: {e}")
             return []
@@ -79,21 +99,28 @@ class BinanceFutures:
 
     def fetch_price(self, pair: str) -> Optional[float]:
         """Joriy narx (last trade price)."""
+        norm = self._normalize(pair)
         try:
-            ticker = self.exchange.fetch_ticker(pair)
+            ticker = self.exchange.fetch_ticker(norm)
             return float(ticker["last"])
         except Exception as e:
             logger.warning(f"[{pair}] fetch_ticker xatosi: {e}")
             return None
 
     def fetch_prices(self, pairs: List[str]) -> Dict[str, float]:
-        """Bir necha juftlik uchun joriy narxlarni bir marotaba olish."""
+        """Bir necha juftlik uchun joriy narxlarni bir marotaba olish.
+        Kirish: foydalanuvchi formatida (`BTC/USDT`).
+        Chiqish: foydalanuvchi formatida kalitlar bilan.
+        """
+        # Normalizatsiya qilingan → asl juftlik xaritasi
+        norm_to_user = {self._normalize(p): p for p in pairs}
         result: Dict[str, float] = {}
         try:
-            tickers = self.exchange.fetch_tickers(pairs)
-            for p, t in tickers.items():
+            tickers = self.exchange.fetch_tickers(list(norm_to_user.keys()))
+            for norm_p, t in tickers.items():
                 if t.get("last") is not None:
-                    result[p] = float(t["last"])
+                    user_p = norm_to_user.get(norm_p, norm_p)
+                    result[user_p] = float(t["last"])
         except Exception as e:
             logger.warning(f"fetch_tickers xatosi: {e} - individual fallback")
             # Fallback - bittalab
@@ -107,8 +134,11 @@ class BinanceFutures:
     def get_price_precision(self, pair: str) -> int:
         """Narx uchun necha xona vergul kerakligini qaytaradi."""
         self.load_markets()
+        norm = self._normalize(pair)
         try:
-            m = self.exchange.markets[pair]
+            m = self.exchange.markets.get(norm) or self.exchange.markets.get(pair)
+            if m is None:
+                return 2
             p = m.get("precision", {}).get("price", 2)
             # ccxt precision: agar tick size ko'rinishida bo'lsa - qayta ishlash
             if isinstance(p, float) and p < 1:
