@@ -109,12 +109,16 @@ class TelegramNotifier:
         pnl_tp3 = s.risk_usd * (cfg.tp3_pct / 100.0) * cfg.rr_tp3
         total_pnl = pnl_tp1 + pnl_tp2 + pnl_tp3
 
+        # Reversal candle turi (SELL uchun bearish reversal, BUY uchun bullish)
+        streak_type = "bullish" if s.direction == "SELL" else "bearish"
+        reversal_type = "bearish" if s.direction == "SELL" else "bullish"
+
         text = (
             f"{emo} <b>{s.direction} Setup #{s.id}</b>\n"
             f"📊 Pair: <code>{s.pair}</code>\n"
             f"⏱ Timeframe: <b>{s.timeframe}</b>\n"
-            f"📈 Series: <b>{s.candle_count}</b> "
-            f"{'bullish' if s.direction == 'SELL' else 'bearish'} candles\n\n"
+            f"📈 Series: <b>{s.candle_count}</b> {streak_type} → "
+            f"<b>1</b> {reversal_type} reversal ✅\n\n"
             f"📍 Entry: <code>{self._fmt(s.pair, s.entry)}</code>\n"
             f"🛑 SL: <code>{self._fmt(s.pair, s.sl)}</code> "
             f"(-${s.risk_usd:.2f})\n"

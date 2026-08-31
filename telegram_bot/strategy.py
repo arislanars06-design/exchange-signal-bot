@@ -101,14 +101,17 @@ class StrategyEngine:
                 continue
             events.extend(self._update_setup_on_candle(setup, candle))
 
-        # 2) Streak yangilash
-        self._update_streak(streak, candle)
-
-        # 3) Yangi setup aniqlash
+        # 2) REVERSAL detektsiyasi — streak update'dan OLDIN, eski state bilan
+        #    SELL: bull_streak >= min VA joriy svecha BEARISH (reversal)
+        #    BUY:  bear_streak >= min VA joriy svecha BULLISH (reversal)
+        #    Qo'shimcha shart: streak'ning box'i valid bo'lishi kerak
+        #    (bull_last_close > bull_first_open, ya'ni streak haqiqatan yuqoriga)
         sell_setup = (streak.bull_streak >= self.config.min_candles
-                      and candle.close > streak.bull_first_open)
+                      and candle.is_bear
+                      and streak.bull_last_close > streak.bull_first_open)
         buy_setup = (streak.bear_streak >= self.config.min_candles
-                     and candle.close < streak.bear_first_open)
+                     and candle.is_bull
+                     and streak.bear_last_close < streak.bear_first_open)
 
         if sell_setup:
             # Rolling cancel — bir xil turdagi eski pending'larni bekor qilish
@@ -137,6 +140,9 @@ class StrategyEngine:
                 price=candle.close,
             ))
 
+        # 3) Streak yangilash — reversal check'dan KEYIN
+        self._update_streak(streak, candle)
+
         streak.last_processed_ms = candle.timestamp_ms
         return events
 
@@ -151,12 +157,14 @@ class StrategyEngine:
                 streak.bull_first_open = candle.open
                 streak.bull_start_ms = candle.timestamp_ms
             streak.bull_streak += 1
+            streak.bull_last_close = candle.close  # box top uchun kerak
             streak.reset_bear()
         elif candle.is_bear:
             if streak.bear_streak == 0:
                 streak.bear_first_open = candle.open
                 streak.bear_start_ms = candle.timestamp_ms
             streak.bear_streak += 1
+            streak.bear_last_close = candle.close  # box bot uchun kerak
             streak.reset_bull()
         else:
             # doji — ikkalasini reset
@@ -169,33 +177,44 @@ class StrategyEngine:
 
     def _create_setup(self, pair: str, timeframe: str, direction: str,
                       streak: StreakState, candle: Candle) -> Setup:
+        """
+        Setup yaratish. `candle` — REVERSAL svecha (SELL uchun bearish,
+        BUY uchun bullish). Box streak'ning first_open va last_close bilan
+        aniqlanadi. `candle.close` bu yerda faqat signal_close sifatida
+        ishlatiladi (informational).
+        """
         cfg = self.config
         if direction == Direction.SELL.value:
             first_open = streak.bull_first_open
+            last_close = streak.bull_last_close  # streak'ning tepasi
             candle_cnt = streak.bull_streak
         else:
             first_open = streak.bear_first_open
+            last_close = streak.bear_last_close  # streak'ning tagi
             candle_cnt = streak.bear_streak
 
-        box_top = max(first_open, candle.close)
-        box_bot = min(first_open, candle.close)
+        # Box: streak'ning first_open va last_close bilan aniqlanadi
+        box_top = max(first_open, last_close)
+        box_bot = min(first_open, last_close)
         rng = box_top - box_bot
 
         if direction == Direction.SELL.value:
-            # fib 0 = top, fib 1 = bot
-            entry = first_open  # fib 1 (bottom)
-            sl = box_top - cfg.fib_sl * rng  # ~box_top
+            # fib 0 = top (streak tepasi = SL), fib 1 = bot (streak boshi = Entry)
+            entry = first_open   # fib 1
+            sl = box_top - cfg.fib_sl * rng  # fib 0 (~box_top)
             tp1 = box_top - cfg.fib_tp1 * rng
             tp2 = box_top - cfg.fib_tp2 * rng
             tp3 = box_top - cfg.fib_tp3 * rng
         else:
-            # fib 0 = bot, fib 1 = top
-            entry = first_open  # fib 1 (top)
-            sl = box_bot + cfg.fib_sl * rng  # ~box_bot
+            # fib 0 = bot (streak tagi = SL), fib 1 = top (streak boshi = Entry)
+            entry = first_open   # fib 1
+            sl = box_bot + cfg.fib_sl * rng  # fib 0 (~box_bot)
             tp1 = box_bot + cfg.fib_tp1 * rng
             tp2 = box_bot + cfg.fib_tp2 * rng
             tp3 = box_bot + cfg.fib_tp3 * rng
 
+        # CZ = SL narx bilan bir xil (streak chekkasi).
+        # Pending vaqtida close CZ ustida bo'lsa (SELL uchun) → cancel.
         setup = Setup(
             id=self._next_id,
             pair=pair,
@@ -206,19 +225,21 @@ class StrategyEngine:
             tp1=tp1,
             tp2=tp2,
             tp3=tp3,
-            cz=candle.close,  # CZ = signal candle close (= SL uchun bir xil)
+            cz=sl,
             status=Status.PENDING.value,
             candle_count=candle_cnt,
             created_at_ms=candle.timestamp_ms,
-            signal_close=candle.close,
+            signal_close=candle.close,  # reversal candle close
             risk_usd=cfg.risk_usd,
             realized_usd=0.0,
             box_top=box_top,
             box_bot=box_bot,
         )
         self._next_id += 1
+        reversal = "bearish" if direction == Direction.SELL.value else "bullish"
         logger.info(f"[{pair} {timeframe}] Yangi setup #{setup.id} {direction} "
-                    f"(sv={candle_cnt}) entry={entry} SL={sl}")
+                    f"(streak={candle_cnt}sv + {reversal} reversal) "
+                    f"entry={entry} SL={sl}")
         return setup
 
     # ==================================================================

@@ -114,6 +114,9 @@ class StreakState:
     bear_first_open: float = 0.0
     bull_start_ms: int = 0
     bear_start_ms: int = 0
+    # Streak'ning oxirgi svechasi close narxi (box top/bot uchun kerak)
+    bull_last_close: float = 0.0
+    bear_last_close: float = 0.0
     # Oxirgi qayta ishlangan svecha timestamp — takroriylikning oldini olish uchun
     last_processed_ms: int = 0
 
@@ -125,11 +128,13 @@ class StreakState:
         self.bull_streak = 0
         self.bull_first_open = 0.0
         self.bull_start_ms = 0
+        self.bull_last_close = 0.0
 
     def reset_bear(self) -> None:
         self.bear_streak = 0
         self.bear_first_open = 0.0
         self.bear_start_ms = 0
+        self.bear_last_close = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
