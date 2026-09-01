@@ -84,9 +84,42 @@ class StrategyEngine:
         # Runtime boshqaruv holati
         self.paused = bool(data.get("paused", False))
         self.muted_pairs = set(data.get("muted_pairs", []))
+        # Runtime sozlamalar overrides - bot orqali o'zgartirilganlar
+        rc = data.get("runtime_config") or {}
+        if rc:
+            cfg = self.config
+            if "pairs" in rc and isinstance(rc["pairs"], list):
+                cfg.pairs = list(rc["pairs"])
+            if "timeframes" in rc and isinstance(rc["timeframes"], list):
+                cfg.timeframes = list(rc["timeframes"])
+            for key in ("min_candles", "enable_be", "fib_sl", "fib_tp1",
+                        "fib_tp2", "fib_tp3", "sl_buffer_pct",
+                        "tp1_pct", "tp2_pct", "tp3_pct", "risk_usd"):
+                if key in rc:
+                    setattr(cfg, key, rc[key])
+            logger.info(f"Runtime sozlamalar tiklandi: pairs={len(cfg.pairs)}, "
+                        f"tf={cfg.timeframes}, risk=${cfg.risk_usd}")
 
     def dump_state(self) -> dict:
         """State'ni saqlash uchun to'liq dict (JSON-friendly)."""
+        # Runtime sozlamalar overrides (bot orqali o'zgartirilganlar)
+        # startup'da .env dagi qiymatlar ustidan qo'llaniladi
+        cfg = self.config
+        runtime_overrides = {
+            "pairs": list(cfg.pairs),
+            "timeframes": list(cfg.timeframes),
+            "min_candles": cfg.min_candles,
+            "enable_be": cfg.enable_be,
+            "fib_sl": cfg.fib_sl,
+            "fib_tp1": cfg.fib_tp1,
+            "fib_tp2": cfg.fib_tp2,
+            "fib_tp3": cfg.fib_tp3,
+            "sl_buffer_pct": cfg.sl_buffer_pct,
+            "tp1_pct": cfg.tp1_pct,
+            "tp2_pct": cfg.tp2_pct,
+            "tp3_pct": cfg.tp3_pct,
+            "risk_usd": cfg.risk_usd,
+        }
         return {
             "streaks": {k: v.to_dict() for k, v in self.streaks.items()},
             "setups": [s.to_dict() for s in self.setups],
@@ -97,6 +130,7 @@ class StrategyEngine:
             "next_id": self._next_id,
             "paused": self.paused,
             "muted_pairs": sorted(self.muted_pairs),
+            "runtime_config": runtime_overrides,
         }
 
     # ==================================================================

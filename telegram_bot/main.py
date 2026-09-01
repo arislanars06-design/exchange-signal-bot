@@ -266,7 +266,8 @@ def main() -> int:
     poller = None
     if config.admin_chat_id:
         try:
-            cmd_handler = CommandHandler(config, engine, notifier, state_mgr)
+            cmd_handler = CommandHandler(config, engine, notifier, state_mgr,
+                                         exchange=exchange)
             poller = TelegramPoller(
                 token=config.telegram_token,
                 command_handler=cmd_handler.handle,
@@ -340,7 +341,8 @@ def main() -> int:
                                         report_tz, config.report_hour)
 
             # ========= 4) Cleanup + save =========
-            engine.cleanup_closed(keep_last=200)
+            # 1000 ta oxirgi setup - filtrlangan stats uchun tarix
+            engine.cleanup_closed(keep_last=1000)
 
             now = time.time()
             if now - last_save > save_every_s:

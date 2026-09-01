@@ -20,11 +20,12 @@ class CommandHandler:
     """Barcha /command'larni qayta ishlaydi va HTML matn qaytaradi."""
 
     def __init__(self, config: Config, engine: StrategyEngine, notifier,
-                 state_mgr=None):
+                 state_mgr=None, exchange=None):
         self.config = config
         self.engine = engine
         self.notifier = notifier
         self.state_mgr = state_mgr
+        self.exchange = exchange  # pair check uchun
 
     # ==================================================================
     # ASOSIY ROUTER
@@ -57,6 +58,7 @@ class CommandHandler:
             "/status": self.cmd_status,
             "/stats": self.cmd_stats,
             "/pairs": self.cmd_pairs,
+            "/tf": self.cmd_tf,
             "/config": self.cmd_config,
             "/setups": self.cmd_setups,
             "/setup": self.cmd_setup,
@@ -66,6 +68,7 @@ class CommandHandler:
             "/unmute": self.cmd_unmute,
             "/muted": self.cmd_muted,
             "/risk": self.cmd_risk,
+            "/set": self.cmd_set,
             "/report": self.cmd_report,
             "/version": self.cmd_version,
         }
@@ -100,27 +103,43 @@ class CommandHandler:
     def cmd_help(self, args) -> str:
         return (
             f"📖 <b>KOMANDALAR RO'YXATI</b>\n\n"
-            f"<b>📊 Ma'lumot:</b>\n"
-            f"/status — bot holati\n"
-            f"/stats — bugungi statistika\n"
-            f"/stats week — haftalik (jami)\n"
-            f"/pairs — kuzatilayotgan juftliklar\n"
-            f"/config — hozirgi sozlamalar\n"
-            f"/version — bot versiyasi\n\n"
-            f"<b>🎯 Setuplar:</b>\n"
-            f"/setups — aktiv setuplar\n"
-            f"/setups today — bugungi barcha\n"
-            f"/setups closed — yopilgan (oxirgi 10)\n"
-            f"/setup 42 — aniq setup tafsilotlari\n\n"
-            f"<b>⚙️ Boshqaruv:</b>\n"
-            f"/pause — yangi setuplarni to'xtatish\n"
-            f"/resume — qayta yoqish\n"
-            f"/mute BTC — juftlikni signalsiz qilish\n"
-            f"/unmute BTC — qayta yoqish\n"
-            f"/muted — mute qilingan juftliklar\n"
-            f"/risk 5 — risk miqdorini o'zgartirish ($)\n"
-            f"/report — kunlik reportni hozir yuborish\n\n"
-            f"💡 <i>Har xabarda #Setup{{ID}} hashtag bor — Telegram'da bosib shu setupning barcha xabarlarini topasiz.</i>"
+            f"<b>📊 STATISTIKA (filtrlar bilan):</b>\n"
+            f"<code>/stats</code> — bugun\n"
+            f"<code>/stats week</code> — 7 kun\n"
+            f"<code>/stats month</code> — 30 kun\n"
+            f"<code>/stats all</code> — barcha vaqt\n"
+            f"<code>/stats today pair BTC</code>\n"
+            f"<code>/stats week tf 15m</code>\n"
+            f"<code>/stats month pair BTC,ETH tf 5m,15m</code>\n"
+            f"<code>/stats 2026-09-01</code> — aniq kun\n\n"
+            f"<b>🎯 SETUPLAR:</b>\n"
+            f"<code>/setups</code> — aktiv\n"
+            f"<code>/setups today</code> — bugun\n"
+            f"<code>/setups closed</code> — oxirgi 10 yopilgan\n"
+            f"<code>/setup 42</code> — tafsilotlar\n\n"
+            f"<b>📊 JUFTLIKLAR va TF:</b>\n"
+            f"<code>/pairs</code> — ro'yxat\n"
+            f"<code>/pairs add PAXG/USDT:USDT</code>\n"
+            f"<code>/pairs remove NVDA</code>\n"
+            f"<code>/tf</code> — ro'yxat\n"
+            f"<code>/tf add 30m</code>\n"
+            f"<code>/tf remove 5m</code>\n\n"
+            f"<b>⚙️ SOZLAMALAR:</b>\n"
+            f"<code>/set</code> — barcha parametrlar\n"
+            f"<code>/set risk 5</code> — risk ($)\n"
+            f"<code>/set min 4</code> — min svechalar\n"
+            f"<code>/set be on|off</code> — BE\n"
+            f"<code>/set sl_buffer 0.02</code>\n"
+            f"<code>/set tp1 40</code> — TP foizlari\n"
+            f"<code>/set fib_tp1 1.618</code>\n\n"
+            f"<b>🎛 BOSHQARUV:</b>\n"
+            f"<code>/pause</code> / <code>/resume</code>\n"
+            f"<code>/mute BTC</code> / <code>/unmute BTC</code>\n"
+            f"<code>/muted</code> — mute'dagilar\n"
+            f"<code>/report</code> — kunlik reportni hozir\n\n"
+            f"<b>ℹ️ MA'LUMOT:</b>\n"
+            f"<code>/status</code>, <code>/config</code>, <code>/version</code>\n\n"
+            f"💡 <i>Har xabarda #Setup&lt;ID&gt; hashtag — bosib shu setupning barcha xabarlarini topasiz.</i>"
         )
 
     def cmd_status(self, args) -> str:
@@ -155,79 +174,298 @@ class CommandHandler:
         )
 
     def cmd_stats(self, args) -> str:
-        eng = self.engine
-        period = args[0].lower() if args else "today"
+        """
+        Filtrlangan statistika. Format:
+          /stats                              - bugun, hammasi
+          /stats today|yesterday|week|month|all
+          /stats today pair BTC               - juftlik filtri (qisman mos)
+          /stats week pair BTC,ETH            - bir necha juftlik
+          /stats today tf 15m                 - timeframe filtri
+          /stats week pair BTC tf 5m,15m      - kombinatsiya
+          /stats 2026-08-31                   - aniq kun
+        """
+        try:
+            period, pairs_f, tfs_f = self._parse_stats_args(args)
+        except ValueError as e:
+            return f"❓ {e}\n\nQo'llanma: /help"
 
-        if period in ("today", "bugun", ""):
-            return self._stats_today()
-        elif period in ("week", "hafta"):
-            return self._stats_total()
-        else:
-            return f"❓ Noma'lum davr: <code>{period}</code>\nMavjud: today, week"
+        # Filtrlangan setuplar
+        filtered = self._filter_setups(period, pairs_f, tfs_f)
 
-    def _stats_today(self) -> str:
-        stats = self.engine.daily_stats
-        if not stats:
-            return "📊 <b>BUGUNGI STATISTIKA</b>\n\nHozircha hech qanday setup yo'q."
+        # Header
+        title_parts = ["📊 <b>STATISTIKA</b>"]
+        period_txt = self._period_label(period)
+        title_parts.append(f"📅 Davr: <b>{period_txt}</b>")
+        if pairs_f:
+            title_parts.append(f"📊 Juftliklar: <b>{', '.join(pairs_f)}</b>")
+        if tfs_f:
+            title_parts.append(f"⏱ TF: <b>{', '.join(tfs_f)}</b>")
 
-        tot_setups = sum(s.setups_created for s in stats.values())
-        tot_won = sum(s.won for s in stats.values())
-        tot_lost = sum(s.lost for s in stats.values())
-        tot_be = sum(s.be for s in stats.values())
-        tot_cancelled = sum(s.cancelled for s in stats.values())
-        tot_usd = sum(s.total_usd for s in stats.values())
-        pnl_emo = "📈" if tot_usd >= 0 else "📉"
-        pnl_sign = "+" if tot_usd >= 0 else ""
-
-        lines = [f"📊 <b>BUGUNGI STATISTIKA</b>\n"]
-
-        sorted_pairs = sorted(stats.items(), key=lambda kv: -kv[1].setups_created)
-        for pair, s in sorted_pairs:
-            if s.setups_created == 0 and s.total_usd == 0:
-                continue
-            pnl_pair_sign = "+" if s.total_usd >= 0 else ""
-            pair_emo = "🟢" if s.total_usd > 0 else ("🔴" if s.total_usd < 0 else "⚪")
-            line = (
-                f"\n<b>{pair}</b> {pair_emo}\n"
-                f"  🎯 {s.setups_created} setup  |  "
-                f"🏆 {s.won}  🔵 {s.be}  🔴 {s.lost}  🟡 {s.cancelled}\n"
-                f"  💰 <b>{pnl_pair_sign}${s.total_usd:.2f}</b>"
+        if not filtered:
+            return (
+                "\n".join(title_parts) +
+                "\n\nℹ️ Bu filtrlar bo'yicha hech qanday setup topilmadi.\n\n"
+                f"<i>Diqqat: bot faqat oxirgi ~1000 setupni saqlaydi.</i>"
             )
-            lines.append(line)
 
-        lines.append(
-            f"\n\n━━━━━━━━━━━━━━━━━━\n"
-            f"📋 <b>JAMI:</b> {tot_setups} setup\n"
-            f"🏆 {tot_won}  🔵 {tot_be}  🔴 {tot_lost}  🟡 {tot_cancelled}\n"
-            f"{pnl_emo} <b>{pnl_sign}${tot_usd:.2f}</b>"
+        # Umumiy statistika
+        stats = self._compute_stats(filtered)
+
+        result_lines = list(title_parts)
+        result_lines.append("")
+
+        # Har juftlik uchun breakdown (agar ko'p bo'lsa)
+        by_pair = self._group_by_pair(filtered)
+        if len(by_pair) > 1:
+            result_lines.append("<b>Juftlik bo'yicha:</b>")
+            sorted_pairs = sorted(by_pair.items(), key=lambda kv: -len(kv[1]))
+            for pair, pair_setups in sorted_pairs[:10]:  # max 10 juftlik
+                ps = self._compute_stats(pair_setups)
+                pnl_sign = "+" if ps["total_usd"] >= 0 else ""
+                emo = "🟢" if ps["total_usd"] > 0 else ("🔴" if ps["total_usd"] < 0 else "⚪")
+                result_lines.append(
+                    f"\n<b>{pair}</b> {emo}\n"
+                    f"  🎯 {ps['total']} setup  |  "
+                    f"🏆 {ps['won']}  🔵 {ps['be']}  🔴 {ps['lost']}  🟡 {ps['cancelled']}\n"
+                    f"  💰 <b>{pnl_sign}${ps['total_usd']:.2f}</b>"
+                )
+
+        # Timeframe breakdown (agar ko'p bo'lsa)
+        by_tf = self._group_by_tf(filtered)
+        if len(by_tf) > 1:
+            result_lines.append("\n<b>Timeframe bo'yicha:</b>")
+            for tf, tf_setups in sorted(by_tf.items()):
+                ts = self._compute_stats(tf_setups)
+                pnl_sign = "+" if ts["total_usd"] >= 0 else ""
+                emo = "🟢" if ts["total_usd"] > 0 else ("🔴" if ts["total_usd"] < 0 else "⚪")
+                result_lines.append(
+                    f"  <b>{tf}</b> {emo}: {ts['total']} setup, "
+                    f"🏆{ts['won']} 🔵{ts['be']} 🔴{ts['lost']} 🟡{ts['cancelled']}, "
+                    f"<b>{pnl_sign}${ts['total_usd']:.2f}</b>"
+                )
+
+        # Jami
+        pnl_sign = "+" if stats["total_usd"] >= 0 else ""
+        pnl_emo = "📈" if stats["total_usd"] >= 0 else "📉"
+        win_rate = (stats["won"] / stats["closed"] * 100) if stats["closed"] > 0 else 0.0
+        profit_rate = ((stats["won"] + stats["be"]) / stats["closed"] * 100) if stats["closed"] > 0 else 0.0
+
+        result_lines.append(
+            f"\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 <b>JAMI:</b> {stats['total']} setup"
         )
-        return "".join(lines)
-
-    def _stats_total(self) -> str:
-        c = self.engine.counters
-        total = c.won + c.lost + c.be
-        win_rate = (c.won / total * 100) if total > 0 else 0.0
-        profit_rate = ((c.won + c.be) / total * 100) if total > 0 else 0.0
-        pnl_emo = "📈" if c.total_usd >= 0 else "📉"
-        pnl_sign = "+" if c.total_usd >= 0 else ""
-
-        return (
-            f"📊 <b>UMUMIY STATISTIKA</b>\n"
-            f"<i>(bot ishga tushganidan buyon)</i>\n\n"
-            f"🎯 Jami setuplar: <b>{c.total_setups}</b>\n"
-            f"🏆 G'oliblar (TP3): <b>{c.won}</b>\n"
-            f"🟢 TP1 qisman: <b>{c.partial_tp1}</b>\n"
-            f"🔵 Zararsiz (BE): <b>{c.be}</b>\n"
-            f"🔴 Zarar (SL): <b>{c.lost}</b>\n"
-            f"🟡 Bekor: <b>{c.cancelled}</b>\n\n"
-            f"📈 G'olib foizi: <b>{win_rate:.1f}%</b>\n"
-            f"💚 Foydali foizi: <b>{profit_rate:.1f}%</b>\n\n"
-            f"{pnl_emo} <b>F/Z: {pnl_sign}${c.total_usd:.2f}</b>\n"
-            f"🚀 Eng yaxshi: <b>+${c.best_usd:.2f}</b>\n"
-            f"💥 Eng yomon: <b>${c.worst_usd:.2f}</b>"
+        if stats["closed"] > 0:
+            result_lines.append(
+                f"🏆 {stats['won']}  🔵 {stats['be']}  "
+                f"🔴 {stats['lost']}  🟡 {stats['cancelled']}\n"
+                f"📈 G'olib foizi: <b>{win_rate:.1f}%</b>  |  "
+                f"💚 Foydali: <b>{profit_rate:.1f}%</b>"
+            )
+        if stats["active"] > 0:
+            result_lines.append(f"⏳ Aktiv: {stats['active']}")
+        result_lines.append(
+            f"{pnl_emo} <b>F/Z: {pnl_sign}${stats['total_usd']:.2f}</b>"
         )
+        if stats["best_usd"] != 0:
+            result_lines.append(
+                f"🚀 Eng yaxshi: <b>+${stats['best_usd']:.2f}</b>  |  "
+                f"💥 Eng yomon: <b>${stats['worst_usd']:.2f}</b>"
+            )
+
+        return "\n".join(result_lines)
+
+    # ==================================================================
+    # STATS HELPER'LAR
+    # ==================================================================
+
+    def _parse_stats_args(self, args):
+        """Args → (period, pairs_list, tfs_list). Xato bo'lsa ValueError."""
+        period = None
+        pairs = None
+        tfs = None
+        i = 0
+        while i < len(args):
+            arg = args[i].lower()
+            # Davr kalit so'zlari
+            if arg in ("today", "bugun"):
+                period = "today"
+            elif arg in ("yesterday", "kecha"):
+                period = "yesterday"
+            elif arg in ("week", "hafta", "7d"):
+                period = "week"
+            elif arg in ("month", "oy", "30d"):
+                period = "month"
+            elif arg == "all":
+                period = "all"
+            elif arg == "pair" and i + 1 < len(args):
+                pairs = [p.strip().upper() for p in args[i + 1].split(",") if p.strip()]
+                i += 1
+            elif arg == "tf" and i + 1 < len(args):
+                tfs = [t.strip().lower() for t in args[i + 1].split(",") if t.strip()]
+                i += 1
+            elif len(arg) == 10 and arg[4] == "-" and arg[7] == "-":
+                # YYYY-MM-DD format
+                period = arg
+            else:
+                raise ValueError(f"Tushunilmadi: <code>{arg}</code>")
+            i += 1
+        return period or "today", pairs, tfs
+
+    def _period_label(self, period: str) -> str:
+        labels = {
+            "today": "Bugun",
+            "yesterday": "Kecha",
+            "week": "Oxirgi 7 kun",
+            "month": "Oxirgi 30 kun",
+            "all": "Barcha vaqt",
+        }
+        return labels.get(period, period)
+
+    def _period_range_ms(self, period: str):
+        """Davr uchun (start_ms, end_ms) qaytaradi. all → (0, inf)."""
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Asia/Tashkent")
+        except Exception:
+            from datetime import timezone
+            tz = timezone.utc
+
+        now = datetime.now(tz)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        if period == "today":
+            start = today_start
+            end_ms = int(time.time() * 1000) + 1000
+            return int(start.timestamp() * 1000), end_ms
+        if period == "yesterday":
+            from datetime import timedelta
+            yesterday = today_start - timedelta(days=1)
+            return int(yesterday.timestamp() * 1000), int(today_start.timestamp() * 1000)
+        if period == "week":
+            from datetime import timedelta
+            start = today_start - timedelta(days=7)
+            return int(start.timestamp() * 1000), int(time.time() * 1000) + 1000
+        if period == "month":
+            from datetime import timedelta
+            start = today_start - timedelta(days=30)
+            return int(start.timestamp() * 1000), int(time.time() * 1000) + 1000
+        if period == "all":
+            return 0, int(time.time() * 1000) + 1000
+        # YYYY-MM-DD format
+        try:
+            from datetime import timedelta
+            parts = period.split("-")
+            y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+            start = datetime(y, m, d, tzinfo=tz)
+            end = start + timedelta(days=1)
+            return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+        except Exception:
+            return 0, int(time.time() * 1000) + 1000
+
+    def _filter_setups(self, period, pairs_filter, tfs_filter):
+        """engine.setups ni filtrlaydi."""
+        start_ms, end_ms = self._period_range_ms(period)
+        result = []
+        for s in self.engine.setups:
+            # Vaqt filtri: closed_at bo'lsa u, yo'q bo'lsa created_at
+            ts = s.closed_at_ms or s.created_at_ms
+            if ts < start_ms or ts >= end_ms:
+                continue
+            # Juftlik filtri (qisman mos: 'BTC' → 'BTC/USDT:USDT')
+            if pairs_filter:
+                if not any(self._pair_matches(s.pair, pf) for pf in pairs_filter):
+                    continue
+            # Timeframe filtri
+            if tfs_filter and s.timeframe not in tfs_filter:
+                continue
+            result.append(s)
+        return result
+
+    def _pair_matches(self, setup_pair: str, filter_pair: str) -> bool:
+        """Setup pair filter'ga mos keladimi? BTC → BTC/USDT:USDT ham mos."""
+        sp = setup_pair.upper()
+        fp = filter_pair.upper()
+        if sp == fp:
+            return True
+        # Base coin match: BTC/USDT:USDT ning 'BTC' qismi 'BTC' ga mos
+        base = sp.split("/")[0]
+        if base == fp:
+            return True
+        # Aniq mos: XAUUSD == XAUUSD
+        if sp == fp:
+            return True
+        return False
+
+    def _compute_stats(self, setups) -> dict:
+        """Setuplar ro'yxatidan aggregate hisoblaydi."""
+        r = {
+            "total": len(setups),
+            "won": 0, "lost": 0, "be": 0, "cancelled": 0, "partial_tp1": 0,
+            "active": 0, "closed": 0,
+            "total_usd": 0.0, "best_usd": 0.0, "worst_usd": 0.0,
+        }
+        for s in setups:
+            if s.status == Status.WON.value:
+                r["won"] += 1
+                r["closed"] += 1
+            elif s.status == Status.LOST.value:
+                r["lost"] += 1
+                r["closed"] += 1
+            elif s.status == Status.BE.value:
+                r["be"] += 1
+                r["closed"] += 1
+            elif s.status == Status.CANCELLED.value:
+                r["cancelled"] += 1
+                r["closed"] += 1
+            else:
+                r["active"] += 1
+            if s.partial_level >= 1:
+                r["partial_tp1"] += 1
+            r["total_usd"] += s.realized_usd
+            if s.realized_usd > r["best_usd"]:
+                r["best_usd"] = s.realized_usd
+            if s.realized_usd < r["worst_usd"]:
+                r["worst_usd"] = s.realized_usd
+        return r
+
+    def _group_by_pair(self, setups) -> dict:
+        d = {}
+        for s in setups:
+            d.setdefault(s.pair, []).append(s)
+        return d
+
+    def _group_by_tf(self, setups) -> dict:
+        d = {}
+        for s in setups:
+            d.setdefault(s.timeframe, []).append(s)
+        return d
 
     def cmd_pairs(self, args) -> str:
+        """
+        /pairs                          - ro'yxat
+        /pairs add BTC/USDT:USDT        - qo'shish
+        /pairs remove BTC/USDT:USDT     - o'chirish
+        /pairs add XAUUSD               - Yahoo tickeri
+        """
+        if not args:
+            return self._pairs_list()
+
+        action = args[0].lower()
+        if action in ("add", "qoshish", "+"):
+            if len(args) < 2:
+                return "❓ Juftlik kiriting: <code>/pairs add BTC/USDT:USDT</code>"
+            return self._pairs_add(args[1])
+        elif action in ("remove", "rm", "delete", "-", "olib"):
+            if len(args) < 2:
+                return "❓ Juftlik kiriting: <code>/pairs remove BTC/USDT:USDT</code>"
+            return self._pairs_remove(args[1])
+        else:
+            return (
+                f"❓ Noma'lum amal: <code>{action}</code>\n"
+                f"Mavjud: <code>add</code>, <code>remove</code>"
+            )
+
+    def _pairs_list(self) -> str:
         cfg = self.config
         eng = self.engine
         binance_pairs = [p for p in cfg.pairs if "/" in p]
@@ -247,9 +485,111 @@ class CommandHandler:
                 muted = " 🔇" if p in eng.muted_pairs else ""
                 lines.append(f"  • <code>{p}</code>{muted}")
 
-        lines.append(f"\n\n⏱ Vaqt oralig'i: <b>{', '.join(cfg.timeframes)}</b>")
-        lines.append(f"📈 Min svechalar: <b>{cfg.min_candles}</b>")
+        lines.append(f"\n\n⏱ Vaqt oralig'i: <b>{', '.join(self.config.timeframes)}</b>")
+        lines.append(f"📈 Min svechalar: <b>{self.config.min_candles}</b>")
+        lines.append(f"\n💡 <i>Boshqarish:</i>")
+        lines.append(f"  <code>/pairs add PAXG/USDT:USDT</code>")
+        lines.append(f"  <code>/pairs remove NVDA</code>")
         return "\n".join(lines)
+
+    def _pairs_add(self, pair: str) -> str:
+        if pair in self.config.pairs:
+            return f"ℹ️ <code>{pair}</code> allaqachon kuzatilyapti"
+        # Exchange orqali tekshirish
+        exchange = getattr(self, "exchange", None)
+        if exchange:
+            try:
+                if not exchange.check_pair(pair):
+                    return (
+                        f"❌ <code>{pair}</code> topilmadi\n\n"
+                        f"Kripto format: <code>BTC/USDT:USDT</code>\n"
+                        f"Stocks/Forex: <code>NVDA</code>, <code>XAUUSD</code>"
+                    )
+            except Exception as e:
+                logger.warning(f"pair check xatosi: {e}")
+        self.config.pairs.append(pair)
+        self._save_state()
+        return (
+            f"✅ <code>{pair}</code> qo'shildi\n\n"
+            f"Bot keyingi iteratsiyada ({self.config.poll_interval}s) uni "
+            f"kuzata boshlaydi. Warmup uchun bir necha daqiqa kutilishi mumkin."
+        )
+
+    def _pairs_remove(self, pair: str) -> str:
+        matched = self._match_pair(pair)
+        if not matched or matched not in self.config.pairs:
+            return f"❌ <code>{pair}</code> ro'yxatda yo'q. /pairs"
+        # Aktiv setuplar bor bo'lsa - bekor qilish
+        cancelled = 0
+        now_ms = int(time.time() * 1000)
+        for s in self.engine.setups:
+            if s.pair == matched and s.status in (
+                Status.PENDING.value, Status.FILLED.value
+            ):
+                s.status = Status.CANCELLED.value
+                s.closed_at_ms = now_ms
+                self.engine.counters.cancelled += 1
+                cancelled += 1
+        self.config.pairs.remove(matched)
+        self.engine.muted_pairs.discard(matched)
+        self._save_state()
+        msg = f"✅ <code>{matched}</code> olib tashlandi"
+        if cancelled:
+            msg += f"\n\n⚠️ {cancelled} ta aktiv setup bekor qilindi"
+        return msg
+
+    def cmd_tf(self, args) -> str:
+        """
+        /tf                 - ro'yxat
+        /tf add 30m         - qo'shish
+        /tf remove 5m       - o'chirish
+        """
+        if not args:
+            return self._tf_list()
+
+        action = args[0].lower()
+        if action in ("add", "qoshish", "+"):
+            if len(args) < 2:
+                return "❓ Timeframe kiriting: <code>/tf add 30m</code>"
+            return self._tf_add(args[1].lower())
+        elif action in ("remove", "rm", "-", "olib"):
+            if len(args) < 2:
+                return "❓ Timeframe kiriting: <code>/tf remove 5m</code>"
+            return self._tf_remove(args[1].lower())
+        else:
+            return f"❓ Mavjud: add, remove. Yoki <code>/tf</code> - ro'yxat"
+
+    def _tf_list(self) -> str:
+        return (
+            f"⏱ <b>Timeframes</b>\n\n"
+            f"Kuzatilayotgan: <b>{', '.join(self.config.timeframes)}</b>\n\n"
+            f"Mavjud: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d\n\n"
+            f"💡 Boshqarish:\n"
+            f"  <code>/tf add 30m</code>\n"
+            f"  <code>/tf remove 5m</code>"
+        )
+
+    def _tf_add(self, tf: str) -> str:
+        valid_tfs = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"}
+        if tf not in valid_tfs:
+            return f"❌ Noto'g'ri TF: <code>{tf}</code>. Mavjud: {', '.join(sorted(valid_tfs))}"
+        if tf in self.config.timeframes:
+            return f"ℹ️ <code>{tf}</code> allaqachon bor"
+        self.config.timeframes.append(tf)
+        self._save_state()
+        return (
+            f"✅ TF <code>{tf}</code> qo'shildi\n\n"
+            f"Hozirgi: <b>{', '.join(self.config.timeframes)}</b>"
+        )
+
+    def _tf_remove(self, tf: str) -> str:
+        if tf not in self.config.timeframes:
+            return f"❌ <code>{tf}</code> ro'yxatda yo'q"
+        if len(self.config.timeframes) <= 1:
+            return "❌ Kamida bitta TF qolishi kerak"
+        self.config.timeframes.remove(tf)
+        self._save_state()
+        return f"✅ TF <code>{tf}</code> olib tashlandi. Qolgan: <b>{', '.join(self.config.timeframes)}</b>"
 
     def cmd_config(self, args) -> str:
         cfg = self.config
@@ -516,6 +856,152 @@ class CommandHandler:
             f"Mavjud setuplar eski risk bilan davom etadi.</i>\n"
             f"<i>Bot restart bo'lsa .env dan qayta o'qiladi.</i>"
         )
+
+    def cmd_set(self, args) -> str:
+        """
+        Sozlamalarni o'zgartirish:
+          /set risk 5           - risk (dollar)
+          /set min 4            - minimum svechalar
+          /set be on|off        - break-even yoqish/o'chirish
+          /set sl_buffer 0.02   - SL buffer (foizda)
+          /set tp1 40           - TP1 foizi
+          /set tp2 30           - TP2 foizi (jami 100 bo'lsin)
+          /set fib_sl 0.1       - Fibonacci SL darajasi
+          /set fib_tp1 1.618    - Fibonacci TP1
+        """
+        if not args:
+            return (
+                f"⚙️ <b>SOZLAMALAR</b>\n\n"
+                f"Foydalanish: <code>/set &lt;parametr&gt; &lt;qiymat&gt;</code>\n\n"
+                f"<b>Mavjud parametrlar:</b>\n"
+                f"  <code>/set risk 5.0</code> — xavf ($)\n"
+                f"  <code>/set min 4</code> — min svechalar\n"
+                f"  <code>/set be on</code> — BE yoqish\n"
+                f"  <code>/set be off</code> — BE o'chirish\n"
+                f"  <code>/set sl_buffer 0.02</code> — SL buffer %\n"
+                f"  <code>/set tp1 50</code> — TP1 partial %\n"
+                f"  <code>/set tp2 25</code> — TP2 partial %\n"
+                f"  <code>/set fib_sl 0.0</code> — Fib SL\n"
+                f"  <code>/set fib_tp1 1.618</code> — Fib TP1\n"
+                f"  <code>/set fib_tp2 2.618</code> — Fib TP2\n"
+                f"  <code>/set fib_tp3 3.618</code> — Fib TP3\n\n"
+                f"Barcha sozlamalar: /config"
+            )
+        param = args[0].lower()
+        if len(args) < 2:
+            return f"❓ Qiymat kiriting: <code>/set {param} &lt;qiymat&gt;</code>"
+        value = args[1]
+
+        try:
+            if param == "risk":
+                v = float(value.replace(",", "."))
+                if v <= 0 or v > 100000:
+                    return "❌ Risk 0 dan katta, 100000 dan kichik bo'lsin"
+                old = self.config.risk_usd
+                self.config.risk_usd = v
+                self._save_state()
+                return f"💰 Risk: ${old:.2f} → <b>${v:.2f}</b> ✅"
+
+            if param == "min":
+                v = int(value)
+                if v < 2 or v > 20:
+                    return "❌ Min svechalar 2-20 oralig'ida bo'lsin"
+                old = self.config.min_candles
+                self.config.min_candles = v
+                self._save_state()
+                return f"📈 Min svechalar: {old} → <b>{v}</b> ✅"
+
+            if param == "be":
+                v = value.lower()
+                if v in ("on", "yes", "true", "1", "yoq"):
+                    self.config.enable_be = True
+                    self._save_state()
+                    return "🔵 Break-Even: <b>YOQILGAN</b> ✅"
+                elif v in ("off", "no", "false", "0", "yoqmi"):
+                    self.config.enable_be = False
+                    self._save_state()
+                    return "🔵 Break-Even: <b>O'CHIRILGAN</b>"
+                else:
+                    return "❌ Qiymat: on yoki off"
+
+            if param in ("sl_buffer", "slbuffer", "buffer"):
+                v = float(value.replace(",", "."))
+                if v < 0 or v > 5:
+                    return "❌ SL buffer 0-5% oralig'ida"
+                old = self.config.sl_buffer_pct
+                self.config.sl_buffer_pct = v
+                self._save_state()
+                return f"🔴 SL buffer: {old:.3f}% → <b>{v:.3f}%</b> ✅"
+
+            if param in ("tp1", "tp1_pct"):
+                v = float(value.replace(",", "."))
+                new_sum = v + self.config.tp2_pct + self.config.tp3_pct
+                if abs(new_sum - 100.0) > 0.5:
+                    return (
+                        f"❌ Jami 100% bo'lsin. Hozir: "
+                        f"TP1={v} + TP2={self.config.tp2_pct} + "
+                        f"TP3={self.config.tp3_pct} = {new_sum}"
+                    )
+                self.config.tp1_pct = v
+                self._save_state()
+                return f"🟢 TP1 %: <b>{v:.1f}%</b> ✅"
+
+            if param in ("tp2", "tp2_pct"):
+                v = float(value.replace(",", "."))
+                new_sum = self.config.tp1_pct + v + self.config.tp3_pct
+                if abs(new_sum - 100.0) > 0.5:
+                    return f"❌ Jami 100% bo'lsin, hozir: {new_sum}"
+                self.config.tp2_pct = v
+                self._save_state()
+                return f"🟢 TP2 %: <b>{v:.1f}%</b> ✅"
+
+            if param in ("tp3", "tp3_pct"):
+                v = float(value.replace(",", "."))
+                new_sum = self.config.tp1_pct + self.config.tp2_pct + v
+                if abs(new_sum - 100.0) > 0.5:
+                    return f"❌ Jami 100% bo'lsin, hozir: {new_sum}"
+                self.config.tp3_pct = v
+                self._save_state()
+                return f"🟢 TP3 %: <b>{v:.1f}%</b> ✅"
+
+            if param == "fib_sl":
+                v = float(value.replace(",", "."))
+                if v < 0 or v >= 1:
+                    return "❌ Fib SL 0-1 oralig'ida"
+                self.config.fib_sl = v
+                self._save_state()
+                return f"📐 Fib SL: <b>{v}</b> ✅ (yangi setuplarga qo'llaniladi)"
+
+            if param == "fib_tp1":
+                v = float(value.replace(",", "."))
+                if v <= 1:
+                    return "❌ Fib TP1 1 dan katta bo'lsin"
+                self.config.fib_tp1 = v
+                self._save_state()
+                return f"📐 Fib TP1: <b>{v}</b> ✅"
+
+            if param == "fib_tp2":
+                v = float(value.replace(",", "."))
+                if v <= self.config.fib_tp1:
+                    return f"❌ Fib TP2 (>{self.config.fib_tp1}) bo'lsin"
+                self.config.fib_tp2 = v
+                self._save_state()
+                return f"📐 Fib TP2: <b>{v}</b> ✅"
+
+            if param == "fib_tp3":
+                v = float(value.replace(",", "."))
+                if v <= self.config.fib_tp2:
+                    return f"❌ Fib TP3 (>{self.config.fib_tp2}) bo'lsin"
+                self.config.fib_tp3 = v
+                self._save_state()
+                return f"📐 Fib TP3: <b>{v}</b> ✅"
+
+            return (
+                f"❓ Noma'lum parametr: <code>{param}</code>\n"
+                f"Barcha parametrlar: /set"
+            )
+        except ValueError as e:
+            return f"❌ Noto'g'ri qiymat: <code>{value}</code>"
 
     def cmd_report(self, args) -> str:
         stats = self.engine.daily_stats
