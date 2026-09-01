@@ -25,7 +25,9 @@ from exchange_yahoo import YahooFinance
 from strategy import StrategyEngine
 from telegram_bot import TelegramNotifier
 from state import StateManager
-from models import Event, Status, Candle
+from models import Event, Status, Candle, EventType
+from commands import CommandHandler
+from polling import TelegramPoller
 
 
 # ==============================
@@ -260,6 +262,22 @@ def main() -> int:
     # Eski holatni yuklash
     state_mgr.load(engine)
 
+    # ADMIN KOMANDA HANDLER (agar admin_chat_id sozlangan bo'lsa)
+    poller = None
+    if config.admin_chat_id:
+        try:
+            cmd_handler = CommandHandler(config, engine, notifier, state_mgr)
+            poller = TelegramPoller(
+                token=config.telegram_token,
+                command_handler=cmd_handler.handle,
+            )
+            poller.start()
+            logger.info(f"Admin komandalar YOQILGAN (chat_id={config.admin_chat_id})")
+        except Exception as e:
+            logger.warning(f"Poller ishga tushmadi (davom etamiz): {e}")
+    else:
+        logger.info("Admin komandalar o'chirilgan (ADMIN_CHAT_ID .env da yo'q)")
+
     # SILENT WARMUP - agar cold start bo'lsa, tarixiy svechalarni jimgina
     # ishlash. Bu Telegram spam'ning oldini oladi.
     try:
@@ -292,6 +310,9 @@ def main() -> int:
                     try:
                         events = process_pair_timeframe(engine, exchange, pair, tf)
                         for ev in events:
+                            # Muted juftliklar - Telegram yuborilmaydi
+                            if ev.setup.pair in engine.muted_pairs:
+                                continue
                             notifier.notify_event(ev)
                     except Exception as e:
                         logger.exception(f"[{pair} {tf}] process xatosi: {e}")
@@ -307,6 +328,8 @@ def main() -> int:
                                 pair, tf, current_price, now_ms
                             )
                             for ev in live_events:
+                                if ev.setup.pair in engine.muted_pairs:
+                                    continue
                                 notifier.notify_event(ev)
                 except Exception as e:
                     logger.exception(f"Live price tekshirish xatosi: {e}")
@@ -341,6 +364,8 @@ def main() -> int:
 
     # ========= SHUTDOWN =========
     logger.info("Shutdown - state saqlanmoqda...")
+    if poller:
+        poller.stop()
     state_mgr.save(engine)
     try:
         notifier.send_shutdown()

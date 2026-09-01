@@ -34,6 +34,9 @@ class StrategyEngine:
         self.daily_stats: Dict[str, DailyPairStats] = {}  # key: pair
         self.daily_stats_day: str = ""  # YYYY-MM-DD - hozirgi tracker kuni
         self.last_reported_day: str = ""  # YYYY-MM-DD - oxirgi yuborilgan report kuni
+        # Runtime boshqaruv - admin komandalar orqali o'zgaradi
+        self.paused: bool = False  # /pause yoki /resume
+        self.muted_pairs: set = set()  # /mute BTC yoki /unmute BTC
 
     # ==================================================================
     # SILENT WARMUP - bot birinchi start'da tarixiy candles'ni
@@ -78,6 +81,9 @@ class StrategyEngine:
         self.daily_stats_day = data.get("daily_stats_day", "")
         self.last_reported_day = data.get("last_reported_day", "")
         self._next_id = data.get("next_id", 1)
+        # Runtime boshqaruv holati
+        self.paused = bool(data.get("paused", False))
+        self.muted_pairs = set(data.get("muted_pairs", []))
 
     def dump_state(self) -> dict:
         """State'ni saqlash uchun to'liq dict (JSON-friendly)."""
@@ -89,6 +95,8 @@ class StrategyEngine:
             "daily_stats_day": self.daily_stats_day,
             "last_reported_day": self.last_reported_day,
             "next_id": self._next_id,
+            "paused": self.paused,
+            "muted_pairs": sorted(self.muted_pairs),
         }
 
     # ==================================================================
@@ -167,6 +175,11 @@ class StrategyEngine:
         buy_setup = (streak.bear_streak >= self.config.min_candles
                      and candle.is_bull
                      and streak.bear_last_close < streak.bear_first_open)
+
+        # Pause holati: yangi setup yaratmaslik (mavjudlar davom etadi)
+        if self.paused:
+            sell_setup = False
+            buy_setup = False
 
         if sell_setup:
             # Rolling cancel — bir xil turdagi eski pending'larni bekor qilish

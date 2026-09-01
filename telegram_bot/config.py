@@ -58,6 +58,9 @@ class Config:
     # Telegram
     telegram_token: str = field(default_factory=lambda: _get_str("TELEGRAM_TOKEN"))
     telegram_chat_id: str = field(default_factory=lambda: _get_str("TELEGRAM_CHAT_ID"))
+    # Admin chat ID - shaxsiy chat orqali bot bilan gaplashish uchun
+    # Bot bilan shaxsiy chat oching va @userinfobot orqali chat_id oling
+    admin_chat_id: str = field(default_factory=lambda: _get_str("ADMIN_CHAT_ID"))
 
     # Binance
     binance_api_key: str = field(default_factory=lambda: _get_str("BINANCE_API_KEY"))
