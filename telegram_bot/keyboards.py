@@ -11,13 +11,11 @@ tegishli komanda ishga tushiriladi.
 
 MAIN_MENU = {
     "keyboard": [
-        [{"text": "📊 Bugun"}, {"text": "📊 Hafta"}, {"text": "📊 Oy"}],
-        [{"text": "🎯 Aktiv setups"}, {"text": "📋 Bugungi setups"}],
-        [{"text": "📊 Juftliklar"}, {"text": "⏱ Timeframes"}],
-        [{"text": "⚙️ Sozlamalar"}, {"text": "🔊 Muted"}],
+        [{"text": "📊 Statistika"}],
+        [{"text": "🎯 Aktiv setups"}],
+        [{"text": "⚙️ Sozlamalar"}],
         [{"text": "⏸ Pause"}, {"text": "▶️ Resume"}],
-        [{"text": "📤 Kunlik report"}, {"text": "ℹ️ Yordam"}],
-        [{"text": "📈 Status"}, {"text": "🔧 Config"}],
+        [{"text": "📈 Status"}, {"text": "ℹ️ Yordam"}],
     ],
     "resize_keyboard": True,
     "is_persistent": True,
@@ -26,29 +24,79 @@ MAIN_MENU = {
 
 # Menyu tugmasi → komanda mapping
 BUTTON_TO_COMMAND = {
-    # Statistika
-    "📊 Bugun": "/stats today",
-    "📊 Hafta": "/stats week",
-    "📊 Oy": "/stats month",
-    "📊 Barcha": "/stats all",
-    # Setuplar
+    "📊 Statistika": "__stats_wizard__",       # instrument+davr wizard
     "🎯 Aktiv setups": "/setups active",
-    "📋 Bugungi setups": "/setups today",
-    "📋 Yopilgan setups": "/setups closed",
-    # Juftliklar/TF
-    "📊 Juftliklar": "/pairs",
-    "⏱ Timeframes": "/tf",
-    # Boshqaruv
-    "⚙️ Sozlamalar": "__settings_menu__",  # inline keyboard chiqaradi
-    "🔊 Muted": "/muted",
+    "⚙️ Sozlamalar": "__settings_menu__",
     "⏸ Pause": "/pause",
     "▶️ Resume": "/resume",
-    "📤 Kunlik report": "/report",
-    # Info
-    "ℹ️ Yordam": "/help",
     "📈 Status": "/status",
-    "🔧 Config": "/config",
+    "ℹ️ Yordam": "/help",
 }
+
+
+# ==================================================================
+# STATISTIKA WIZARD KEYBOARDS
+# ==================================================================
+
+def stats_pairs_kb(all_pairs, selected_set) -> dict:
+    """Instrument tanlash uchun checkbox-style inline keyboard."""
+    rows = []
+    # Har bir juftlik uchun bitta qator (checkbox bilan)
+    for i, p in enumerate(all_pairs):
+        check = "✅" if p in selected_set else "⬜"
+        rows.append([{
+            "text": f"{check} {p}",
+            "callback_data": f"sw|pair|{i}"
+        }])
+    # "HAMMASI" tugmasi
+    all_selected = len(selected_set) == len(all_pairs) and len(all_pairs) > 0
+    check_all = "✅" if all_selected else "⬜"
+    rows.append([{
+        "text": f"{check_all} HAMMASI",
+        "callback_data": "sw|all"
+    }])
+    # Boshqaruv tugmalari
+    rows.append([
+        {"text": "▶️ Davom", "callback_data": "sw|next"},
+        {"text": "❌ Bekor", "callback_data": "sw|cancel"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def stats_period_kb() -> dict:
+    """Davr tanlash uchun inline keyboard."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📅 Bugun", "callback_data": "sw|period|today"},
+                {"text": "📅 Kecha", "callback_data": "sw|period|yesterday"},
+            ],
+            [
+                {"text": "📅 Hafta", "callback_data": "sw|period|week"},
+                {"text": "📅 Oy", "callback_data": "sw|period|month"},
+            ],
+            [
+                {"text": "📅 Barcha vaqt", "callback_data": "sw|period|all"},
+            ],
+            [
+                {"text": "📆 Sana: dan-gacha", "callback_data": "sw|period|custom"},
+            ],
+            [
+                {"text": "◀️ Orqaga", "callback_data": "sw|back"},
+                {"text": "❌ Bekor", "callback_data": "sw|cancel"},
+            ],
+        ]
+    }
+
+
+def stats_result_kb() -> dict:
+    """Statistika ko'rsatilgandan keyingi tugmalar."""
+    return {
+        "inline_keyboard": [
+            [{"text": "🔄 Yangi statistika", "callback_data": "sw|restart"}],
+            [{"text": "❌ Yopish", "callback_data": "close"}],
+        ]
+    }
 
 
 # ==================================================================

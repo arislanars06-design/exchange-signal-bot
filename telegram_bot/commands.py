@@ -16,6 +16,7 @@ from keyboards import (
     MAIN_MENU, BUTTON_TO_COMMAND, settings_menu_kb,
     risk_preset_kb, min_preset_kb, be_toggle_kb, sl_buffer_preset_kb,
     tp_presets_kb, stats_period_kb, close_kb,
+    stats_pairs_kb, stats_result_kb,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,10 +31,13 @@ class CommandHandler:
         self.engine = engine
         self.notifier = notifier
         self.state_mgr = state_mgr
-        self.exchange = exchange  # pair check uchun
+        self.exchange = exchange
         # Foydalanuvchidan input kutayotgan holat
-        # {chat_id: "risk"|"sl_buffer"|...}
+        # {chat_id: "risk"|"sl_buffer"|"custom_date"|...}
         self._pending_input = {}
+        # Statistika wizard holati
+        # {chat_id: {"step": "pairs"|"period", "selected_pairs": set, "pairs_snapshot": list}}
+        self._stats_wizard = {}
 
     # ==================================================================
     # ASOSIY ROUTER
@@ -66,6 +70,8 @@ class CommandHandler:
             mapped = BUTTON_TO_COMMAND[text]
             if mapped == "__settings_menu__":
                 return self._show_settings_menu()
+            if mapped == "__stats_wizard__":
+                return self._start_stats_wizard(chat_id)
             text = mapped
 
         if not text.startswith("/"):
@@ -146,43 +152,28 @@ class CommandHandler:
     def cmd_help(self, args) -> str:
         return (
             f"📖 <b>KOMANDALAR RO'YXATI</b>\n\n"
-            f"<b>📊 STATISTIKA (filtrlar bilan):</b>\n"
-            f"<code>/stats</code> — bugun\n"
-            f"<code>/stats week</code> — 7 kun\n"
-            f"<code>/stats month</code> — 30 kun\n"
-            f"<code>/stats all</code> — barcha vaqt\n"
+            f"<b>📱 MENYU TUGMALAR:</b>\n"
+            f"📊 <b>Statistika</b> — instrument+davr wizard\n"
+            f"🎯 <b>Aktiv setups</b> — hozir kutilayotganlar\n"
+            f"⚙️ <b>Sozlamalar</b> — inline sozlash\n"
+            f"⏸ <b>Pause</b> / ▶️ <b>Resume</b> — to'xtatish/yoqish\n"
+            f"📈 <b>Status</b> — bot holati\n\n"
+            f"<b>💬 KOMANDALAR (yozib chaqirish):</b>\n"
+            f"<code>/menu</code> — menyuni ko'rsatish\n"
+            f"<code>/stats</code> — bugungi statistika\n"
+            f"<code>/stats week</code>, <code>/stats month</code>\n"
             f"<code>/stats today pair BTC</code>\n"
             f"<code>/stats week tf 15m</code>\n"
-            f"<code>/stats month pair BTC,ETH tf 5m,15m</code>\n"
-            f"<code>/stats 2026-09-01</code> — aniq kun\n\n"
-            f"<b>🎯 SETUPLAR:</b>\n"
-            f"<code>/setups</code> — aktiv\n"
-            f"<code>/setups today</code> — bugun\n"
-            f"<code>/setups closed</code> — oxirgi 10 yopilgan\n"
-            f"<code>/setup 42</code> — tafsilotlar\n\n"
-            f"<b>📊 JUFTLIKLAR va TF:</b>\n"
-            f"<code>/pairs</code> — ro'yxat\n"
-            f"<code>/pairs add PAXG/USDT:USDT</code>\n"
-            f"<code>/pairs remove NVDA</code>\n"
-            f"<code>/tf</code> — ro'yxat\n"
-            f"<code>/tf add 30m</code>\n"
-            f"<code>/tf remove 5m</code>\n\n"
-            f"<b>⚙️ SOZLAMALAR:</b>\n"
-            f"<code>/set</code> — barcha parametrlar\n"
-            f"<code>/set risk 5</code> — risk ($)\n"
-            f"<code>/set min 4</code> — min svechalar\n"
-            f"<code>/set be on|off</code> — BE\n"
-            f"<code>/set sl_buffer 0.02</code>\n"
-            f"<code>/set tp1 40</code> — TP foizlari\n"
-            f"<code>/set fib_tp1 1.618</code>\n\n"
-            f"<b>🎛 BOSHQARUV:</b>\n"
-            f"<code>/pause</code> / <code>/resume</code>\n"
-            f"<code>/mute BTC</code> / <code>/unmute BTC</code>\n"
-            f"<code>/muted</code> — mute'dagilar\n"
-            f"<code>/report</code> — kunlik reportni hozir\n\n"
-            f"<b>ℹ️ MA'LUMOT:</b>\n"
-            f"<code>/status</code>, <code>/config</code>, <code>/version</code>\n\n"
-            f"💡 <i>Har xabarda #Setup&lt;ID&gt; hashtag — bosib shu setupning barcha xabarlarini topasiz.</i>"
+            f"<code>/setups</code> — aktiv setuplar\n"
+            f"<code>/setup 42</code> — bitta setup\n"
+            f"<code>/pairs</code>, <code>/pairs add</code>, <code>/pairs remove</code>\n"
+            f"<code>/tf</code>, <code>/tf add 30m</code>, <code>/tf remove 5m</code>\n"
+            f"<code>/muted</code>, <code>/mute BTC</code>, <code>/unmute BTC</code>\n"
+            f"<code>/set risk 5</code>, <code>/set min 4</code>, va h.k.\n"
+            f"<code>/report</code> — kunlik reportni yuborish\n"
+            f"<code>/config</code> — barcha sozlamalar\n"
+            f"<code>/version</code>, <code>/status</code>\n\n"
+            f"💡 <i>Har xabarda #Setup&lt;ID&gt; — bosib shu setupning barcha xabarlarini topasiz.</i>"
         )
 
     def cmd_status(self, args) -> str:
@@ -364,8 +355,12 @@ class CommandHandler:
         }
         return labels.get(period, period)
 
-    def _period_range_ms(self, period: str):
-        """Davr uchun (start_ms, end_ms) qaytaradi. all → (0, inf)."""
+    def _period_range_ms(self, period):
+        """Davr uchun (start_ms, end_ms) qaytaradi.
+        period tuple bo'lsa - to'g'ridan-to'g'ri qaytaradi."""
+        # Custom range (tuple bilan kelgan)
+        if isinstance(period, tuple):
+            return period
         try:
             from zoneinfo import ZoneInfo
             tz = ZoneInfo("Asia/Tashkent")
@@ -406,19 +401,21 @@ class CommandHandler:
             return 0, int(time.time() * 1000) + 1000
 
     def _filter_setups(self, period, pairs_filter, tfs_filter):
-        """engine.setups ni filtrlaydi."""
+        """engine.setups ni filtrlaydi.
+        pairs_filter: to'liq nom (exact match) yoki qisman (BTC → BTC/USDT:USDT).
+        """
         start_ms, end_ms = self._period_range_ms(period)
         result = []
         for s in self.engine.setups:
-            # Vaqt filtri: closed_at bo'lsa u, yo'q bo'lsa created_at
             ts = s.closed_at_ms or s.created_at_ms
             if ts < start_ms or ts >= end_ms:
                 continue
-            # Juftlik filtri (qisman mos: 'BTC' → 'BTC/USDT:USDT')
             if pairs_filter:
-                if not any(self._pair_matches(s.pair, pf) for pf in pairs_filter):
+                # Avval EXACT match (wizard'dan to'liq nom keladi)
+                if s.pair in pairs_filter:
+                    pass  # to'g'ri
+                elif not any(self._pair_matches(s.pair, pf) for pf in pairs_filter):
                     continue
-            # Timeframe filtri
             if tfs_filter and s.timeframe not in tfs_filter:
                 continue
             result.append(s)
@@ -1133,39 +1130,312 @@ class CommandHandler:
             return None
 
         try:
-            # Format: "action:arg1:arg2"
-            parts = data.split(":")
-            action = parts[0]
+            # STATS WIZARD (yangi delimiter: |)
+            if data.startswith("sw|"):
+                return self._handle_stats_wizard(chat_id, data[3:])
+
+            # Format: "action:arg1:arg2..."
+            if ":" in data:
+                action, rest = data.split(":", 1)
+                parts_rest = rest.split(":")
+            else:
+                action = data
+                parts_rest = []
 
             if action == "close":
                 return ("✅ Yopildi.", None)
 
             if action == "settings":
-                sub = parts[1] if len(parts) > 1 else "menu"
+                sub = parts_rest[0] if parts_rest else "menu"
                 return self._cb_settings(sub)
 
             if action == "set":
                 # set:param:value
-                if len(parts) < 3:
+                if len(parts_rest) < 2:
                     return "❌ Noto'g'ri format"
-                return self._cb_set(parts[1], ":".join(parts[2:]))
+                return self._cb_set(parts_rest[0], ":".join(parts_rest[1:]))
 
             if action == "input":
-                # input:param - foydalanuvchidan matn kutish
-                if len(parts) < 2:
+                if not parts_rest:
                     return None
-                return self._cb_await_input(chat_id, parts[1])
+                return self._cb_await_input(chat_id, parts_rest[0])
 
             if action == "stats":
-                # stats:today, stats:week, etc.
-                if len(parts) < 2:
+                # stats:today (old, bir bosgichli)
+                if not parts_rest:
                     return None
-                return (self.cmd_stats([parts[1]]), None)
+                return (self.cmd_stats([parts_rest[0]]), None)
 
             return f"❓ Noma'lum callback: {data}"
         except Exception as e:
             logger.exception(f"Callback xatosi: {e}")
             return f"⚠️ Xato: {str(e)[:100]}"
+
+    # ==================================================================
+    # STATISTIKA WIZARD (instrument tanlash → davr → natija)
+    # ==================================================================
+
+    def _start_stats_wizard(self, chat_id):
+        """Wizard boshlash - instrument tanlash bosqichiga o'tish."""
+        # Wizard state
+        self._stats_wizard[str(chat_id)] = {
+            "step": "pairs",
+            "selected_pairs": set(),
+            # Snapshot juftliklar tartibi (index-based callback uchun)
+            "pairs_snapshot": list(self.config.pairs),
+        }
+        return self._render_pairs_step(chat_id)
+
+    def _render_pairs_step(self, chat_id):
+        w = self._stats_wizard.get(str(chat_id))
+        if not w:
+            return self._start_stats_wizard(chat_id)
+        selected = w["selected_pairs"]
+        pairs = w["pairs_snapshot"]
+        n = len(selected)
+        # Tanlangan juftliklar ro'yxati
+        sel_txt = ""
+        if n > 0:
+            sel_list = [p for p in pairs if p in selected]
+            sel_txt = "\n<i>" + ", ".join(sel_list) + "</i>"
+        text = (
+            f"📊 <b>STATISTIKA</b>\n"
+            f"<b>1️⃣ / 2️⃣</b>  Instrumentlarni tanlang\n\n"
+            f"Tanlangan: <b>{n} ta</b>{sel_txt}\n\n"
+            f"💡 <i>Tugmalarni bosib tanlang. \"HAMMASI\" — barcha juftliklar.</i>"
+        )
+        return (text, stats_pairs_kb(pairs, selected))
+
+    def _render_period_step(self, chat_id):
+        w = self._stats_wizard.get(str(chat_id))
+        if not w:
+            return self._start_stats_wizard(chat_id)
+        selected = w["selected_pairs"]
+        sel_txt = ", ".join(sorted(selected)) if selected else "hech qaysi"
+        text = (
+            f"📊 <b>STATISTIKA</b>\n"
+            f"<b>2️⃣ / 2️⃣</b>  Davrni tanlang\n\n"
+            f"Tanlangan instrumentlar ({len(selected)}):\n"
+            f"<code>{sel_txt}</code>\n\n"
+            f"Preset davr yoki maxsus sana:"
+        )
+        return (text, stats_period_kb())
+
+    def _handle_stats_wizard(self, chat_id: str, action_path: str):
+        """Wizard callback'lari: pair|N, all, next, back, cancel,
+        period|today|week|..., period|custom, restart."""
+        w = self._stats_wizard.get(str(chat_id))
+        if not w:
+            # Wizard eskirgan yoki qaytadan ochilyapti
+            return self._start_stats_wizard(chat_id)
+
+        # cancel/restart
+        if action_path == "cancel":
+            self._stats_wizard.pop(str(chat_id), None)
+            self._pending_input.pop(str(chat_id), None)
+            return ("❌ Wizard bekor qilindi.", None)
+
+        if action_path == "restart":
+            return self._start_stats_wizard(chat_id)
+
+        # PAIRS STEP
+        if w["step"] == "pairs":
+            if action_path == "all":
+                pairs = w["pairs_snapshot"]
+                all_now = len(w["selected_pairs"]) == len(pairs)
+                if all_now:
+                    w["selected_pairs"].clear()
+                else:
+                    w["selected_pairs"] = set(pairs)
+                return self._render_pairs_step(chat_id)
+
+            if action_path.startswith("pair|"):
+                try:
+                    idx = int(action_path.split("|", 1)[1])
+                    if 0 <= idx < len(w["pairs_snapshot"]):
+                        p = w["pairs_snapshot"][idx]
+                        if p in w["selected_pairs"]:
+                            w["selected_pairs"].discard(p)
+                        else:
+                            w["selected_pairs"].add(p)
+                except (ValueError, IndexError):
+                    pass
+                return self._render_pairs_step(chat_id)
+
+            if action_path == "next":
+                if not w["selected_pairs"]:
+                    return (
+                        f"⚠️ <b>Kamida bitta instrumentni tanlang</b>",
+                        stats_pairs_kb(w["pairs_snapshot"], w["selected_pairs"])
+                    )
+                w["step"] = "period"
+                return self._render_period_step(chat_id)
+
+        # PERIOD STEP
+        if w["step"] == "period":
+            if action_path == "back":
+                w["step"] = "pairs"
+                return self._render_pairs_step(chat_id)
+
+            if action_path.startswith("period|"):
+                period_val = action_path.split("|", 1)[1]
+                if period_val == "custom":
+                    # Custom sana uchun matn kutish
+                    self._pending_input[str(chat_id)] = "custom_date"
+                    return (
+                        f"📆 <b>Sana oralig'ini yozing</b>\n\n"
+                        f"Format: <code>YYYY-MM-DD YYYY-MM-DD</code>\n"
+                        f"Masalan: <code>2026-08-01 2026-08-31</code>\n\n"
+                        f"Yoki bitta kun uchun:\n"
+                        f"<code>2026-08-15</code>\n\n"
+                        f"<i>Bekor qilish: /menu</i>",
+                        None
+                    )
+                # Preset davr - stats chiqarish
+                return self._show_wizard_result(chat_id, period_val)
+
+        return self._render_pairs_step(chat_id)
+
+    def _show_wizard_result(self, chat_id: str, period):
+        """Yakuniy statistika. period: str yoki (start_ms, end_ms) tuple."""
+        w = self._stats_wizard.get(str(chat_id))
+        if not w:
+            return ("❌ Wizard state topilmadi", None)
+
+        pairs = list(w["selected_pairs"])
+        filtered = self._filter_setups(period, pairs, None)
+
+        # Header
+        period_txt = self._period_label(period) if isinstance(period, str) else self._format_custom_period(period)
+        pairs_txt = ", ".join(sorted(pairs))
+
+        title = (
+            f"📊 <b>STATISTIKA — NATIJA</b>\n"
+            f"📅 <b>{period_txt}</b>\n"
+            f"📊 Instrumentlar ({len(pairs)}): <code>{pairs_txt}</code>\n"
+        )
+
+        if not filtered:
+            text = (
+                title +
+                f"\nℹ️ Bu filtrlar bo'yicha setup topilmadi.\n\n"
+                f"<i>Diqqat: bot faqat oxirgi ~1000 setupni saqlaydi.</i>"
+            )
+            return (text, stats_result_kb())
+
+        # Umumiy
+        stats = self._compute_stats(filtered)
+        result_lines = [title, ""]
+
+        # Har juftlik uchun (agar > 1 juftlik)
+        by_pair = self._group_by_pair(filtered)
+        if len(by_pair) > 1:
+            result_lines.append("<b>Juftlik bo'yicha:</b>")
+            sorted_pairs = sorted(by_pair.items(), key=lambda kv: -len(kv[1]))
+            for pair, pair_setups in sorted_pairs[:15]:
+                ps = self._compute_stats(pair_setups)
+                pnl_sign = "+" if ps["total_usd"] >= 0 else ""
+                emo = "🟢" if ps["total_usd"] > 0 else ("🔴" if ps["total_usd"] < 0 else "⚪")
+                result_lines.append(
+                    f"\n<b>{pair}</b> {emo}\n"
+                    f"  🎯 {ps['total']} setup  |  "
+                    f"🏆 {ps['won']}  🔵 {ps['be']}  🔴 {ps['lost']}  🟡 {ps['cancelled']}\n"
+                    f"  💰 <b>{pnl_sign}${ps['total_usd']:.2f}</b>"
+                )
+
+        # Timeframe breakdown
+        by_tf = self._group_by_tf(filtered)
+        if len(by_tf) > 1:
+            result_lines.append("\n<b>Timeframe bo'yicha:</b>")
+            for tf, tf_setups in sorted(by_tf.items()):
+                ts = self._compute_stats(tf_setups)
+                pnl_sign = "+" if ts["total_usd"] >= 0 else ""
+                emo = "🟢" if ts["total_usd"] > 0 else ("🔴" if ts["total_usd"] < 0 else "⚪")
+                result_lines.append(
+                    f"  <b>{tf}</b> {emo}: {ts['total']} setup, "
+                    f"🏆{ts['won']} 🔵{ts['be']} 🔴{ts['lost']} 🟡{ts['cancelled']}, "
+                    f"<b>{pnl_sign}${ts['total_usd']:.2f}</b>"
+                )
+
+        # Jami
+        pnl_sign = "+" if stats["total_usd"] >= 0 else ""
+        pnl_emo = "📈" if stats["total_usd"] >= 0 else "📉"
+        win_rate = (stats["won"] / stats["closed"] * 100) if stats["closed"] > 0 else 0.0
+        profit_rate = ((stats["won"] + stats["be"]) / stats["closed"] * 100) if stats["closed"] > 0 else 0.0
+
+        result_lines.append(
+            f"\n━━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 <b>JAMI:</b> {stats['total']} setup"
+        )
+        if stats["closed"] > 0:
+            result_lines.append(
+                f"🏆 {stats['won']}  🔵 {stats['be']}  "
+                f"🔴 {stats['lost']}  🟡 {stats['cancelled']}\n"
+                f"📈 G'olib foizi: <b>{win_rate:.1f}%</b>  |  "
+                f"💚 Foydali: <b>{profit_rate:.1f}%</b>"
+            )
+        if stats["active"] > 0:
+            result_lines.append(f"⏳ Aktiv: {stats['active']}")
+        result_lines.append(
+            f"{pnl_emo} <b>F/Z: {pnl_sign}${stats['total_usd']:.2f}</b>"
+        )
+        if stats["best_usd"] != 0 or stats["worst_usd"] != 0:
+            result_lines.append(
+                f"🚀 Eng yaxshi: <b>+${stats['best_usd']:.2f}</b>  |  "
+                f"💥 Eng yomon: <b>${stats['worst_usd']:.2f}</b>"
+            )
+
+        return ("\n".join(result_lines), stats_result_kb())
+
+    def _format_custom_period(self, period_tuple) -> str:
+        """(start_ms, end_ms) → 'YYYY-MM-DD dan YYYY-MM-DD gacha'."""
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Asia/Tashkent")
+        except Exception:
+            from datetime import timezone
+            tz = timezone.utc
+        start_ms, end_ms = period_tuple
+        start = datetime.fromtimestamp(start_ms / 1000, tz=tz)
+        end = datetime.fromtimestamp(end_ms / 1000, tz=tz)
+        # end exclusive - 1 kun ayirib
+        from datetime import timedelta
+        end_disp = end - timedelta(days=1)
+        if start.strftime("%Y-%m-%d") == end_disp.strftime("%Y-%m-%d"):
+            return start.strftime("%Y-%m-%d")
+        return (
+            f"{start.strftime('%Y-%m-%d')} dan "
+            f"{end_disp.strftime('%Y-%m-%d')} gacha"
+        )
+
+    def _parse_custom_date_range(self, text: str):
+        """'2026-08-01 2026-08-31' yoki '2026-08-15' → (start_ms, end_ms)."""
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Asia/Tashkent")
+        except Exception:
+            from datetime import timezone
+            tz = timezone.utc
+        from datetime import timedelta
+
+        parts = text.strip().split()
+        dates = []
+        for p in parts:
+            try:
+                y, m, d = p.split("-")
+                dt = datetime(int(y), int(m), int(d), tzinfo=tz)
+                dates.append(dt)
+            except Exception:
+                return None
+        if len(dates) == 1:
+            start = dates[0]
+            end = start + timedelta(days=1)
+        elif len(dates) == 2:
+            start, end = dates
+            end = end + timedelta(days=1)  # end inclusive
+        else:
+            return None
+        return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
     def _cb_settings(self, sub: str):
         """Sozlamalar submenulari."""
@@ -1282,6 +1552,26 @@ class CommandHandler:
     def _handle_pending_input(self, chat_id: str, param: str, text: str):
         """Kutilayotgan input keldi."""
         self._pending_input.pop(str(chat_id), None)
+
+        # Custom sana oralig'i (wizard uchun)
+        if param == "custom_date":
+            date_range = self._parse_custom_date_range(text)
+            if not date_range:
+                # Qayta so'rash
+                self._pending_input[str(chat_id)] = "custom_date"
+                return (
+                    f"❌ <b>Noto'g'ri format</b>\n\n"
+                    f"To'g'ri format:\n"
+                    f"<code>2026-08-01 2026-08-31</code>\n"
+                    f"yoki bitta kun:\n"
+                    f"<code>2026-08-15</code>\n\n"
+                    f"Qayta yozing yoki /menu bilan bekor qiling",
+                    None
+                )
+            # Yakuniy statistika
+            return self._show_wizard_result(chat_id, date_range)
+
+        # Sozlamalar uchun
         result = self.cmd_set([param, text.strip()])
         return (
             f"{result}\n\n"
