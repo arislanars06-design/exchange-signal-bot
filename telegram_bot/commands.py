@@ -12,6 +12,11 @@ from typing import List, Optional
 from config import Config
 from models import Status, Direction, EventType
 from strategy import StrategyEngine
+from keyboards import (
+    MAIN_MENU, BUTTON_TO_COMMAND, settings_menu_kb,
+    risk_preset_kb, min_preset_kb, be_toggle_kb, sl_buffer_preset_kb,
+    tp_presets_kb, stats_period_kb, close_kb,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +31,23 @@ class CommandHandler:
         self.notifier = notifier
         self.state_mgr = state_mgr
         self.exchange = exchange  # pair check uchun
+        # Foydalanuvchidan input kutayotgan holat
+        # {chat_id: "risk"|"sl_buffer"|...}
+        self._pending_input = {}
 
     # ==================================================================
     # ASOSIY ROUTER
     # ==================================================================
 
-    def handle(self, chat_id: str, text: str) -> Optional[str]:
-        """Xabar matnini qayta ishlab, javob HTML matni qaytaradi.
-        None qaytarsa - hech qanday javob yuborilmasin."""
-        # Faqat admin komandalar
+    def handle(self, chat_id: str, text: str):
+        """Xabar matnini qayta ishlab, javob qaytaradi.
+
+        Qaytish qiymati:
+          None                          - hech qanday javob yuborilmasin
+          str                           - oddiy HTML matn
+          (str, dict)                   - matn + reply_markup (keyboard)
+        """
+        # Faqat admin
         if not self.config.admin_chat_id:
             return None
         if str(chat_id) != str(self.config.admin_chat_id):
@@ -42,6 +55,19 @@ class CommandHandler:
             return None
 
         text = text.strip()
+
+        # Pending input state (masalan risk qiymatini kutayotgan bo'lsa)
+        pending = getattr(self, "_pending_input", {}).get(str(chat_id))
+        if pending and not text.startswith("/"):
+            return self._handle_pending_input(chat_id, pending, text)
+
+        # Menyu tugmalari - komanda ga tarjima qilish
+        if text in BUTTON_TO_COMMAND:
+            mapped = BUTTON_TO_COMMAND[text]
+            if mapped == "__settings_menu__":
+                return self._show_settings_menu()
+            text = mapped
+
         if not text.startswith("/"):
             return None
 
@@ -54,6 +80,7 @@ class CommandHandler:
 
         handler_map = {
             "/start": self.cmd_start,
+            "/menu": self.cmd_menu,
             "/help": self.cmd_help,
             "/status": self.cmd_status,
             "/stats": self.cmd_stats,
@@ -90,14 +117,30 @@ class CommandHandler:
     # BASIC KOMANDALAR
     # ==================================================================
 
-    def cmd_start(self, args) -> str:
-        return (
+    def cmd_start(self, args):
+        text = (
             f"👋 <b>Salom, admin!</b>\n\n"
             f"Men — SERIYA Bot. Signallar kanalingizga yuboradi va\n"
             f"siz bu yerdan meni boshqarasiz.\n\n"
-            f"📖 Barcha komandalar: /help\n"
-            f"📊 Bugungi statistika: /stats\n"
-            f"⚙️ Sozlamalar: /config"
+            f"📱 <b>Menyu pastda joylashdi</b>\n"
+            f"Har bir tugma tegishli amalni bajaradi.\n\n"
+            f"💡 Yoki <code>/komanda</code> yozib to'g'ridan-to'g'ri chaqiring.\n\n"
+            f"📖 Barcha komandalar: /help"
+        )
+        # Menyuni ham qo'shib yuborish
+        return (text, MAIN_MENU)
+
+    def cmd_menu(self, args):
+        """Menyu klaviaturasini qayta ko'rsatish."""
+        return ("📱 <b>Asosiy menyu</b>\n\nPastdagi tugmalardan tanlang.",
+                MAIN_MENU)
+
+    def _show_settings_menu(self):
+        """Sozlamalar inline keyboard'ni ko'rsatish."""
+        return (
+            f"⚙️ <b>SOZLAMALAR</b>\n\n"
+            f"Tegishli parametrni tanlang o'zgartirish uchun:",
+            settings_menu_kb(self.config)
         )
 
     def cmd_help(self, args) -> str:
@@ -1077,6 +1120,174 @@ class CommandHandler:
         d = h // 24
         h2 = h % 24
         return f"{d} kun {h2} soat"
+
+    # ==================================================================
+    # CALLBACK QUERY HANDLER (inline button tap)
+    # ==================================================================
+
+    def handle_callback(self, chat_id: str, data: str):
+        """Inline tugma bosilganda. Qaytadi (text, reply_markup) yoki str."""
+        if not self.config.admin_chat_id:
+            return None
+        if str(chat_id) != str(self.config.admin_chat_id):
+            return None
+
+        try:
+            # Format: "action:arg1:arg2"
+            parts = data.split(":")
+            action = parts[0]
+
+            if action == "close":
+                return ("✅ Yopildi.", None)
+
+            if action == "settings":
+                sub = parts[1] if len(parts) > 1 else "menu"
+                return self._cb_settings(sub)
+
+            if action == "set":
+                # set:param:value
+                if len(parts) < 3:
+                    return "❌ Noto'g'ri format"
+                return self._cb_set(parts[1], ":".join(parts[2:]))
+
+            if action == "input":
+                # input:param - foydalanuvchidan matn kutish
+                if len(parts) < 2:
+                    return None
+                return self._cb_await_input(chat_id, parts[1])
+
+            if action == "stats":
+                # stats:today, stats:week, etc.
+                if len(parts) < 2:
+                    return None
+                return (self.cmd_stats([parts[1]]), None)
+
+            return f"❓ Noma'lum callback: {data}"
+        except Exception as e:
+            logger.exception(f"Callback xatosi: {e}")
+            return f"⚠️ Xato: {str(e)[:100]}"
+
+    def _cb_settings(self, sub: str):
+        """Sozlamalar submenulari."""
+        if sub == "menu":
+            return self._show_settings_menu()
+        if sub == "risk":
+            return (
+                f"💰 <b>Risk qiymati</b>\n\n"
+                f"Hozirgi: <b>${self.config.risk_usd:.2f}</b>\n\n"
+                f"Tayyor qiymatdan tanlang yoki o'zingiz kiriting:",
+                risk_preset_kb()
+            )
+        if sub == "min":
+            return (
+                f"📈 <b>Minimum svechalar soni</b>\n\n"
+                f"Hozirgi: <b>{self.config.min_candles}</b>\n\n"
+                f"Yangi qiymatni tanlang:",
+                min_preset_kb()
+            )
+        if sub == "be":
+            be_state = "YOQILGAN ✅" if self.config.enable_be else "OCHIRILGAN ❌"
+            return (
+                f"🔵 <b>Break-Even (BE)</b>\n\n"
+                f"BE — TP1 tegilganda SL avtomatik entry narxiga siljiydi.\n"
+                f"Bu qolgan pozitsiyada risk yo'q qiladi.\n\n"
+                f"Hozirgi: <b>{be_state}</b>",
+                be_toggle_kb(self.config.enable_be)
+            )
+        if sub == "sl_buffer":
+            return (
+                f"🔴 <b>SL Buffer</b>\n\n"
+                f"Kichik wick'lar SL ni urib ketmasligi uchun buffer.\n"
+                f"Hozirgi: <b>{self.config.sl_buffer_pct:.3f}%</b>\n\n"
+                f"Tayyor qiymatdan tanlang:",
+                sl_buffer_preset_kb()
+            )
+        if sub in ("tp1", "tp2", "tp3", "tp_ratios", "tp_all", "fib_tps"):
+            return (
+                f"🟢 <b>TP Partial foizlar</b>\n\n"
+                f"Hozirgi: {self.config.tp1_pct:.0f} / "
+                f"{self.config.tp2_pct:.0f} / {self.config.tp3_pct:.0f}\n\n"
+                f"Tayyor kombinatsiyalardan tanlang:",
+                tp_presets_kb()
+            )
+        if sub == "fib_sl":
+            return (
+                f"📐 <b>Fibonacci SL</b>\n\n"
+                f"Hozirgi: <b>{self.config.fib_sl}</b>\n\n"
+                f"0 = karobka chekkasi (default)\n"
+                f"0.1 = ichkariroqqa 10%\n"
+                f"0.382 = klassik fib retracement\n\n"
+                f"O'zgartirish uchun:\n"
+                f"<code>/set fib_sl 0.1</code>",
+                None
+            )
+        if sub == "close":
+            return ("✅ Sozlamalar yopildi.", None)
+        return f"❓ Noma'lum sub-menyu: {sub}"
+
+    def _cb_set(self, param: str, value: str):
+        """Callback orqali sozlamani o'rnatish (preset qiymat)."""
+        # Special: TP presets ("tp:50,25,25")
+        if param == "tp":
+            vals = value.split(",")
+            if len(vals) == 3:
+                try:
+                    v1, v2, v3 = float(vals[0]), float(vals[1]), float(vals[2])
+                    if abs(v1 + v2 + v3 - 100.0) > 0.5:
+                        return (
+                            f"❌ Jami 100% bo'lsin (hozir: {v1+v2+v3})",
+                            settings_menu_kb(self.config)
+                        )
+                    self.config.tp1_pct = v1
+                    self.config.tp2_pct = v2
+                    self.config.tp3_pct = v3
+                    self._save_state()
+                    return (
+                        f"🟢 TP foizlar: <b>{v1:.0f} / {v2:.0f} / {v3:.0f}</b> ✅\n\n"
+                        f"⚙️ Boshqa sozlama:",
+                        settings_menu_kb(self.config)
+                    )
+                except ValueError:
+                    return ("❌ Noto'g'ri qiymat", settings_menu_kb(self.config))
+
+        # Boshqa oddiy setlar
+        result = self.cmd_set([param, value])
+        # Muvaffaqiyat belgisi bo'lsa - menyuga qaytish
+        success_prefixes = ("💰", "📈", "🔵", "🔴", "🟢", "📐")
+        if result.startswith(success_prefixes):
+            return (
+                f"{result}\n\n"
+                f"⚙️ Boshqa sozlama:",
+                settings_menu_kb(self.config)
+            )
+        return (result, None)
+
+    def _cb_await_input(self, chat_id: str, param: str):
+        """Foydalanuvchidan matn kutish holatini yoqish."""
+        prompts = {
+            "risk": "💰 Yangi risk qiymatini yozing (masalan: <code>7.5</code>)",
+            "sl_buffer": "🔴 Yangi SL buffer % yozing (masalan: <code>0.03</code>)",
+            "min": "📈 Yangi min svechalar sonini yozing",
+        }
+        prompt = prompts.get(param)
+        if not prompt:
+            return f"❓ Bu parametr uchun matn kiritish qo'llab-quvvatlanmaydi"
+        self._pending_input[str(chat_id)] = param
+        return (
+            f"{prompt}\n\n"
+            f"<i>Bekor qilish uchun /menu</i>",
+            None
+        )
+
+    def _handle_pending_input(self, chat_id: str, param: str, text: str):
+        """Kutilayotgan input keldi."""
+        self._pending_input.pop(str(chat_id), None)
+        result = self.cmd_set([param, text.strip()])
+        return (
+            f"{result}\n\n"
+            f"⚙️ Boshqa sozlama:",
+            settings_menu_kb(self.config)
+        )
 
     def _today_start_ms(self) -> int:
         """Bugungi kunning 00:00 (Toshkent) ms timestamp."""

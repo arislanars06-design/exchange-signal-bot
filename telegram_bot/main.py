@@ -271,9 +271,26 @@ def main() -> int:
             poller = TelegramPoller(
                 token=config.telegram_token,
                 command_handler=cmd_handler.handle,
+                callback_handler=cmd_handler.handle_callback,
             )
             poller.start()
             logger.info(f"Admin komandalar YOQILGAN (chat_id={config.admin_chat_id})")
+
+            # Admin chat'ga menyu yuborish
+            try:
+                from keyboards import MAIN_MENU
+                notifier.send_message(
+                    text=(
+                        f"🚀 <b>Bot yoqildi</b>\n\n"
+                        f"📱 Menyu pastda joylashdi. Har bir tugma tegishli amalni bajaradi.\n\n"
+                        f"💡 Yordam uchun: <code>/help</code>\n"
+                        f"Menyu qaytadan chiqarish: <code>/menu</code>"
+                    ),
+                    reply_markup=MAIN_MENU,
+                    chat_id=config.admin_chat_id,
+                )
+            except Exception as e:
+                logger.warning(f"Menu yuborish xatosi: {e}")
         except Exception as e:
             logger.warning(f"Poller ishga tushmadi (davom etamiz): {e}")
     else:

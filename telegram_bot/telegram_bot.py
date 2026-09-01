@@ -55,15 +55,21 @@ class TelegramNotifier:
     # ==================================================================
 
     def send_message(self, text: str, parse_mode: str = "HTML",
-                     disable_notification: bool = False) -> bool:
+                     disable_notification: bool = False,
+                     reply_markup: dict = None,
+                     chat_id: str = None) -> bool:
+        """Xabar yuborish. chat_id berilmasa - default (kanal)."""
         url = self.BASE_URL.format(token=self.token, method="sendMessage")
+        target_chat = chat_id if chat_id else self.chat_id
         payload = {
-            "chat_id": self.chat_id,
+            "chat_id": target_chat,
             "text": text,
             "parse_mode": parse_mode,
             "disable_web_page_preview": True,
             "disable_notification": disable_notification,
         }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         for attempt in range(3):
             try:
                 r = requests.post(url, json=payload, timeout=15)
