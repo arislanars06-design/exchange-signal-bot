@@ -246,24 +246,6 @@ def tp_presets_kb() -> dict:
     }
 
 
-def stats_period_kb() -> dict:
-    """Stats davri tanlash uchun."""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "📅 Bugun", "callback_data": "stats:today"},
-                {"text": "📅 Kecha", "callback_data": "stats:yesterday"},
-            ],
-            [
-                {"text": "📅 Hafta", "callback_data": "stats:week"},
-                {"text": "📅 Oy", "callback_data": "stats:month"},
-            ],
-            [{"text": "📅 Barcha vaqt", "callback_data": "stats:all"}],
-            [{"text": "❌ Yopish", "callback_data": "close"}],
-        ]
-    }
-
-
 def close_kb() -> dict:
     """Faqat yopish tugmasi."""
     return {
