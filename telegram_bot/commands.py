@@ -104,6 +104,7 @@ class CommandHandler:
             "/set": self.cmd_set,
             "/report": self.cmd_report,
             "/version": self.cmd_version,
+            "/debug": self.cmd_debug,
         }
 
         handler = handler_map.get(cmd_raw)
@@ -406,19 +407,39 @@ class CommandHandler:
         """
         start_ms, end_ms = self._period_range_ms(period)
         result = []
+        skipped_time = 0
+        skipped_pair = 0
+        skipped_tf = 0
         for s in self.engine.setups:
             ts = s.closed_at_ms or s.created_at_ms
             if ts < start_ms or ts >= end_ms:
+                skipped_time += 1
                 continue
             if pairs_filter:
-                # Avval EXACT match (wizard'dan to'liq nom keladi)
                 if s.pair in pairs_filter:
-                    pass  # to'g'ri
+                    pass
                 elif not any(self._pair_matches(s.pair, pf) for pf in pairs_filter):
+                    skipped_pair += 1
                     continue
             if tfs_filter and s.timeframe not in tfs_filter:
+                skipped_tf += 1
                 continue
             result.append(s)
+        # DEBUG log - filter natijalarini ko'rish uchun
+        logger.info(
+            f"FILTER DEBUG: period={period}, pairs_filter={pairs_filter}, "
+            f"tfs_filter={tfs_filter}, "
+            f"total_setups={len(self.engine.setups)}, kept={len(result)}, "
+            f"skipped_time={skipped_time}, skipped_pair={skipped_pair}, "
+            f"skipped_tf={skipped_tf}"
+        )
+        # Pair nomlarini ham log qilamiz - agar mos kelmasa ko'ramiz
+        if pairs_filter and len(result) == 0:
+            all_pairs = sorted(set(s.pair for s in self.engine.setups))
+            logger.warning(
+                f"FILTER: hech nima topilmadi. Filter={pairs_filter}, "
+                f"engine.setups.pair unikal qiymatlar: {all_pairs}"
+            )
         return result
 
     def _pair_matches(self, setup_pair: str, filter_pair: str) -> bool:
@@ -651,6 +672,56 @@ class CommandHandler:
             f"  Soat: <b>{cfg.report_hour:02d}:00</b>\n\n"
             f"<i>O'zgartirish uchun: /opt/seriya-bot/.env</i>"
         )
+
+    def cmd_debug(self, args) -> str:
+        """Debug ma'lumot - filter muammosini topish uchun."""
+        eng = self.engine
+        cfg = self.config
+
+        pair_counts = {}
+        for s in eng.setups:
+            pair_counts[s.pair] = pair_counts.get(s.pair, 0) + 1
+
+        config_pairs = set(cfg.pairs)
+        setup_pairs = set(pair_counts.keys())
+        only_in_config = config_pairs - setup_pairs
+        only_in_setups = setup_pairs - config_pairs
+
+        wizard_state = "aktiv" if self._stats_wizard else "yoq"
+        pending_state = (list(self._pending_input.values())
+                         if self._pending_input else "yoq")
+
+        lines = [
+            f"🐛 <b>DEBUG INFO</b>\n",
+            f"<b>Setuplar:</b> {len(eng.setups)} ta jami",
+            f"<b>Wizard state:</b> {wizard_state}",
+            f"<b>Pending input:</b> {pending_state}",
+            f"",
+            f"<b>Config pairs ({len(config_pairs)}):</b>",
+        ]
+        for p in sorted(config_pairs):
+            lines.append(f"  • <code>{p}</code>")
+
+        lines.append(f"\n<b>Setup pair'lari (unikal):</b>")
+        for p in sorted(setup_pairs):
+            cnt = pair_counts[p]
+            problem_note = " ❌ config da YOQ!" if p not in config_pairs else " ✅"
+            lines.append(f"  • <code>{p}</code> ({cnt} setup){problem_note}")
+
+        if only_in_config:
+            lines.append(f"\n⚠️ Config'da bor, setup'da yo'q:")
+            for p in sorted(only_in_config):
+                lines.append(f"  • <code>{p}</code>")
+
+        if only_in_setups:
+            lines.append(f"\n⚠️ Setup'da bor, config'da yo'q (BUG SABABI):")
+            for p in sorted(only_in_setups):
+                lines.append(f"  • <code>{p}</code>")
+
+        lines.append(
+            f"\n💡 Setup pair'lari config bilan mos kelmasa filter ishlamaydi."
+        )
+        return "\n".join(lines)
 
     def cmd_version(self, args) -> str:
         return (
